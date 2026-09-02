@@ -143,7 +143,7 @@ async function createWorkPreview(file){
 }
 
 async function renderExhibitionEvent(event,context){
-  layout('写真展出展申込','<a class="button secondary" href="#/">部員画面へ戻る</a>')
+  layout('写真展出展申込','<a class="button secondary" href="#/">ポータルトップに戻る</a>')
   try{
     if(!context.member)throw new Error('出展申込には部員名簿への登録が必要です。')
     const {data:entry,error}=await supabase.from('exhibition_entries').select('*,exhibition_works(*)').eq('event_id',event.id).eq('member_id',context.member.id).maybeSingle()
@@ -211,7 +211,7 @@ async function renderExhibitionEvent(event,context){
 
 async function renderEvent(id,context){
   context??=await getContext()
-  layout('参加回答','<a class="button secondary" href="#/">部員画面へ戻る</a>')
+  layout('参加回答','<a class="button secondary" href="#/">ポータルトップに戻る</a>')
   try{
     const {data:event,error}=await supabase.from('events').select('*,event_responses(*)').eq('id',id).single()
     const member=context.member
@@ -234,7 +234,7 @@ const paymentLabel=value=>value==='paid'?'支払い済み':value==='unpaid'?'未
 
 async function renderAdmin(context){
   context??=await getContext()
-  layout('予定管理','<a class="button secondary" href="#/">部員画面</a><button id="logout" class="secondary">ログアウト</button>')
+  layout('予定管理','<a class="button secondary" href="#/">ポータルトップに戻る</a><button id="logout" class="secondary">ログアウト</button>')
   document.querySelector('#logout').onclick=()=>supabase.auth.signOut()
   try{
     if(!context.admin)throw new Error('管理者権限がありません。')
