@@ -96,11 +96,17 @@ async function renderPortal(context){
     if(context.admin)document.querySelector('.header-actions').insertAdjacentHTML('afterbegin','<a class="button secondary" href="#/admin">管理画面</a>')
     const {data:events,error}=await supabase.from('events').select('*,event_responses(*)').is('deleted_at',null).order('starts_at')
     if(error)throw error
+    let exhibitionEntries={}
+    if(context.member){
+      const {data:entries,error:entryError}=await supabase.from('exhibition_entries').select('event_id,status').eq('member_id',context.member.id)
+      if(entryError)throw entryError
+      exhibitionEntries=Object.fromEntries((entries||[]).map(entry=>[entry.event_id,entry]))
+    }
     hideMessage();const view=document.querySelector('#view'),membership=context.member?.membership_years?.find(y=>y.fiscal_year===fiscalYear()&&y.active)
     view.innerHTML=`<section class="panel"><span class="tag">MEMBER</span><h2>${esc(context.member?.name||context.email)}さん</h2>${context.member?`<p>${esc([context.member.grade,context.member.faculty||context.member.graduate_school,context.member.department||context.member.major].filter(Boolean).join('・'))}</p><p>部員ID：${esc(context.member.member_no)}</p><p class="status">${membership?`${fiscalYear()}年度 在籍中`:`${fiscalYear()}年度の在籍登録はありません`}</p>`:'<p>部員名簿に登録されていません。</p>'}</section><div class="section-head"><p class="eyebrow">OPEN EVENTS</p><h2>現在参加できる活動</h2></div><section id="events" class="grid"></section><div class="section-head"><p class="eyebrow">MY EXHIBITION</p><h2>写真展マイページ</h2></div><section id="archives" class="stack"></section>`
     const eventRoot=document.querySelector('#events')
     if(!events?.length)eventRoot.innerHTML='<div class="panel">現在参加できる活動はありません。</div>'
-    events?.forEach(event=>{const response=event.event_responses?.[0];eventRoot.insertAdjacentHTML('beforeend',`<a class="card" href="#/event/${event.id}"><div><span class="tag">${eventLabel(event)}</span><h3>${esc(event.title)}</h3><p>${fmt(event.starts_at)}・${esc(event.place)}</p>${response?`<p class="status">${response.cancelled_at?'キャンセル済み':`回答済み：${esc(response.attendance)}`}</p>`:''}</div><strong>→</strong></a>`)})
+    events?.forEach(event=>{const response=event.event_responses?.[0],entry=exhibitionEntries[event.id],state=entry?.status==='submitted'?'出展申込済み':entry?.status==='draft'?'出展申込を下書き保存中':entry?.status==='withdrawn'?'出展申込を取り下げ済み':'';eventRoot.insertAdjacentHTML('beforeend',`<a class="card" href="#/event/${event.id}"><div><span class="tag">${eventLabel(event)}</span><h3>${esc(event.title)}</h3><p>${fmt(event.starts_at)}・${esc(event.place)}</p>${event.genre==='exhibition'&&state?`<p class="status">${state}</p>`:response?`<p class="status">${response.cancelled_at?'キャンセル済み':`回答済み：${esc(response.attendance)}`}</p>`:''}</div><strong>→</strong></a>`)})
     await renderArchives()
   }catch(error){failure(error)}
 }
@@ -113,13 +119,101 @@ async function renderArchives(){
   Object.values(grouped).forEach(items=>root.insertAdjacentHTML('beforeend',`<article class="panel"><span class="tag">EXHIBITION ARCHIVE</span><h3>${esc(items[0].archive_exhibitions.title)}</h3><div class="grid">${items.map(w=>`<section><p class="tag">No.${esc(w.display_no)}</p><h3>${esc(w.title)}</h3><p><strong>${w.favorite_count}票</strong>・${w.favorite_rate}%</p><details><summary>寄せられた感想（${w.archive_work_comments.length}件）</summary><ul>${w.archive_work_comments.map(c=>`<li>${esc(c.comment)}</li>`).join('')}</ul></details></section>`).join('')}</div></article>`))
 }
 
+const exhibitionWorkStatus=value=>value==='submitted'?'提出済み':value==='accepted'?'確認済み':value==='rejected'?'要修正':value==='withdrawn'?'取り下げ':'下書き'
+const allowedOriginalTypes=new Set(['image/jpeg','image/png','image/tiff','image/heic','image/heif'])
+const originalExtension=file=>({
+  'image/jpeg':'jpg','image/png':'png','image/tiff':'tiff','image/heic':'heic','image/heif':'heif',
+})[file.type]
+
+async function createWorkPreview(file){
+  if(!['image/jpeg','image/png'].includes(file.type))return null
+  let source=null,objectUrl=''
+  try{
+    if(window.createImageBitmap)source=await createImageBitmap(file)
+    else{
+      objectUrl=URL.createObjectURL(file)
+      source=await new Promise((resolve,reject)=>{const image=new Image();image.onload=()=>resolve(image);image.onerror=()=>reject(new Error('画像を読み込めませんでした。'));image.src=objectUrl})
+    }
+    const scale=Math.min(1,1800/Math.max(source.width,source.height)),canvas=document.createElement('canvas')
+    canvas.width=Math.max(1,Math.round(source.width*scale));canvas.height=Math.max(1,Math.round(source.height*scale))
+    canvas.getContext('2d').drawImage(source,0,0,canvas.width,canvas.height)
+    const blob=await new Promise((resolve,reject)=>canvas.toBlob(value=>value?resolve(value):reject(new Error('プレビューを生成できませんでした。')),'image/webp',.86))
+    return new File([blob],'preview.webp',{type:'image/webp'})
+  }finally{source?.close?.();if(objectUrl)URL.revokeObjectURL(objectUrl)}
+}
+
+async function renderExhibitionEvent(event,context){
+  layout('写真展出展申込','<a class="button secondary" href="#/">部員画面へ戻る</a>')
+  try{
+    if(!context.member)throw new Error('出展申込には部員名簿への登録が必要です。')
+    const {data:entry,error}=await supabase.from('exhibition_entries').select('*,exhibition_works(*)').eq('event_id',event.id).eq('member_id',context.member.id).maybeSingle()
+    if(error)throw error
+    hideMessage();const view=document.querySelector('#view'),allWorks=(entry?.exhibition_works||[]).sort((a,b)=>a.sort_order-b.sort_order),works=allWorks.filter(work=>work.status!=='withdrawn')
+    view.innerHTML=`<section class="panel"><span class="tag">EXHIBITION ENTRY</span><h2>${esc(event.exhibition_title||event.title)}</h2><dl><dt>日時</dt><dd>${fmt(event.starts_at)}${event.ends_at?` 〜 ${fmt(event.ends_at)}`:''}</dd><dt>場所</dt><dd>${esc(event.place)}</dd><dt>連絡先</dt><dd>${esc(event.contact)}</dd><dt>出展上限</dt><dd>1人 ${event.max_works}作品</dd></dl><p class="copy">${esc(event.details)}</p></section><section class="panel exhibition-entry-panel"><div class="entry-heading"><div><span class="tag">YOUR ENTRY</span><h2>出展作品を登録</h2></div><span class="status">${entry?entry.status==='submitted'?'申込済み':entry.status==='withdrawn'?'取り下げ済み':'下書き':'未入力'}</span></div><p class="muted">原画像は非公開で保存され、本人と管理者だけが閲覧できます。JPEG・PNG・TIFF・HEIC・HEIF、1作品50MBまでです。</p><form id="exhibitionEntryForm" class="stack"><div id="workEditors" class="stack"></div><div class="actions work-actions"><button type="button" id="addWork" class="secondary">作品を追加</button></div><label>出展全体に関する備考<textarea name="entry_note" rows="3">${esc(entry?.note||'')}</textarea></label><div class="notice">「下書き保存」では提出は完了しません。「出展申込を確定」を押すと、登録した全作品が提出済みになります。</div><div class="actions"><button type="button" id="saveEntryDraft" class="secondary">下書き保存</button><button type="submit" id="submitEntry">出展申込を確定</button></div></form></section>`
+    const form=document.querySelector('#exhibitionEntryForm'),editors=document.querySelector('#workEditors'),addButton=document.querySelector('#addWork')
+    const addEditor=(work=null)=>{
+      const activeCount=editors.querySelectorAll('.work-editor').length
+      if(activeCount>=event.max_works){message(`出展可能作品数は${event.max_works}作品までです。`,true);return}
+      const locked=['accepted'].includes(work?.status)
+      editors.insertAdjacentHTML('beforeend',`<article class="work-editor" data-id="${esc(work?.id||'')}" data-sort-order="${work?.sort_order||''}" data-original-path="${esc(work?.original_image_path||'')}" data-preview-path="${esc(work?.preview_image_path||'')}" data-locked="${locked}"><div class="work-editor-head"><div><span class="tag">WORK ${activeCount+1}</span><h3>${work?esc(exhibitionWorkStatus(work.status)):'新しい作品'}</h3></div><button type="button" class="danger remove-work" ${locked?'disabled':''}>${work&&work.status!=='draft'?'取り下げ':'削除'}</button></div><div class="form-grid"><label>作品名（提出時必須）<input name="title" value="${esc(work?.title||'')}" ${locked?'disabled':''}></label><label>原画像${work?.original_image_path?'（登録済み）':'（提出時必須）'}<input type="file" name="original" accept="image/jpeg,image/png,image/tiff,image/heic,image/heif,.jpg,.jpeg,.png,.tif,.tiff,.heic,.heif" ${locked?'disabled':''}></label><label class="full">キャプション<textarea name="caption" rows="3" ${locked?'disabled':''}>${esc(work?.caption||'')}</textarea></label><label class="full">作品に関する備考<textarea name="note" rows="2" ${locked?'disabled':''}>${esc(work?.note||'')}</textarea></label></div>${work?.preview_image_path?'<div class="work-preview"><span class="muted">登録済みプレビューを読み込んでいます…</span></div>':work?.original_image_path?'<p class="muted">原画像登録済み（この形式のプレビューはブラウザでは生成されません）</p>':''}</article>`)
+      const editor=editors.lastElementChild
+      editor.querySelector('[name=original]').onchange=change=>{const file=change.target.files[0];if(file&&!allowedOriginalTypes.has(file.type)){change.target.value='';failure('対応していない画像形式です。JPEG・PNG・TIFF・HEIC・HEIFを選択してください。')}}
+      editor.querySelector('.remove-work').onclick=async()=>{
+        if(!work){editor.remove();renumber();return}
+        if(!confirm(`「${work.title||'名称未入力'}」を${work.status==='draft'?'削除':'取り下げ'}しますか？`))return
+        try{
+          if(entry?.status==='submitted'){const {error:draftError}=await supabase.from('exhibition_entries').update({status:'draft'}).eq('id',entry.id);if(draftError)throw draftError}
+          const paths=[work.original_image_path,work.preview_image_path].filter(Boolean)
+          for(const [bucket,path] of [['exhibition-originals',work.original_image_path],['exhibition-previews',work.preview_image_path]])if(path){const {error:removeError}=await supabase.storage.from(bucket).remove([path]);if(removeError)throw removeError}
+          const query=work.status==='draft'?supabase.from('exhibition_works').delete().eq('id',work.id):supabase.from('exhibition_works').update({status:'withdrawn'}).eq('id',work.id)
+          const {error:removeRowError}=await query;if(removeRowError)throw removeRowError
+          await renderExhibitionEvent(event,context);message(paths.length?'作品と保存画像を削除しました。':'作品を削除しました。')
+        }catch(removeError){failure(removeError)}
+      }
+      if(work?.preview_image_path)loadWorkPreview(editor,work.preview_image_path)
+      renumber()
+    }
+    const renumber=()=>{editors.querySelectorAll('.work-editor').forEach((editor,index)=>editor.querySelector('.tag').textContent=`WORK ${index+1}`);addButton.disabled=editors.querySelectorAll('.work-editor').length>=event.max_works}
+    const loadWorkPreview=async(editor,path)=>{const {data,error}=await supabase.storage.from('exhibition-previews').createSignedUrl(path,900);const target=editor.querySelector('.work-preview');if(!target)return;if(error){target.innerHTML='<span class="muted">プレビューを表示できませんでした。</span>';return}target.innerHTML=`<img src="${esc(data.signedUrl)}" alt="登録済み作品のプレビュー">`}
+    works.forEach(addEditor);if(!works.length)addEditor();addButton.onclick=()=>addEditor()
+    const save=async submitted=>{const saveButton=document.querySelector(submitted?'#submitEntry':'#saveEntryDraft'),editorList=[...editors.querySelectorAll('.work-editor')];try{
+      if(submitted&&!editorList.length)throw new Error('提出する作品を1件以上追加してください。')
+      editorList.forEach((editor,index)=>{if(editor.dataset.locked==='true')return;const title=editor.querySelector('[name=title]').value.trim(),file=editor.querySelector('[name=original]').files[0],hasOriginal=Boolean(editor.dataset.originalPath);if(submitted&&!title)throw new Error(`作品${index+1}の作品名を入力してください。`);if(submitted&&!file&&!hasOriginal)throw new Error(`作品${index+1}の原画像を選択してください。`);if(file&&file.size>52428800)throw new Error(`作品${index+1}の原画像が50MBを超えています。`);if(file&&!allowedOriginalTypes.has(file.type))throw new Error(`作品${index+1}の画像形式に対応していません。`)})
+      saveButton.disabled=true;message(submitted?'画像を保存し、出展申込を確定しています…':'下書きを保存しています…')
+      let currentEntry=entry
+      if(!currentEntry){const {data,error:createError}=await supabase.from('exhibition_entries').insert({event_id:event.id,member_id:context.member.id,status:'draft',note:form.entry_note.value.trim()}).select().single();if(createError)throw createError;currentEntry=data}
+      if(currentEntry.status==='submitted'){const {error:draftError}=await supabase.from('exhibition_entries').update({status:'draft'}).eq('id',currentEntry.id);if(draftError)throw draftError}
+      let nextSort=Math.max(0,...allWorks.map(work=>work.sort_order||0))+1
+      for(const editor of editorList){
+        if(editor.dataset.locked==='true')continue
+        let workId=editor.dataset.id,sortOrder=Number(editor.dataset.sortOrder)||nextSort++,originalPath=editor.dataset.originalPath||null,previewPath=editor.dataset.previewPath||null
+        if(!workId){const {data:newWork,error:createWorkError}=await supabase.from('exhibition_works').insert({entry_id:currentEntry.id,event_id:event.id,owner_member_id:context.member.id,sort_order:sortOrder,status:'draft'}).select().single();if(createWorkError)throw createWorkError;workId=newWork.id;editor.dataset.id=workId}
+        const file=editor.querySelector('[name=original]').files[0]
+        if(file){
+          const prefix=`${event.id}/${context.member.id}/${workId}`,newOriginalPath=`${prefix}/original.${originalExtension(file)}`
+          const {error:uploadError}=await supabase.storage.from('exhibition-originals').upload(newOriginalPath,file,{upsert:true,contentType:file.type});if(uploadError)throw uploadError
+          if(originalPath&&originalPath!==newOriginalPath){const {error:oldError}=await supabase.storage.from('exhibition-originals').remove([originalPath]);if(oldError)console.warn('以前の原画像を削除できませんでした。',oldError)}
+          originalPath=newOriginalPath
+          const preview=await createWorkPreview(file)
+          if(preview){const newPreviewPath=`${prefix}/preview.webp`,{error:previewError}=await supabase.storage.from('exhibition-previews').upload(newPreviewPath,preview,{upsert:true,contentType:'image/webp'});if(previewError)throw previewError;previewPath=newPreviewPath}
+        }
+        const payload={title:editor.querySelector('[name=title]').value.trim(),caption:editor.querySelector('[name=caption]').value.trim(),note:editor.querySelector('[name=note]').value.trim(),original_image_path:originalPath,preview_image_path:previewPath,status:submitted?'submitted':'draft'}
+        const {error:updateError}=await supabase.from('exhibition_works').update(payload).eq('id',workId);if(updateError)throw updateError
+      }
+      const {error:entryError}=await supabase.from('exhibition_entries').update({note:form.entry_note.value.trim(),status:submitted?'submitted':'draft'}).eq('id',currentEntry.id);if(entryError)throw entryError
+      await renderExhibitionEvent(event,context);message(submitted?'出展申込を確定しました。':'下書きを保存しました。')
+    }catch(saveError){saveButton.disabled=false;failure(saveError)}}
+    document.querySelector('#saveEntryDraft').onclick=()=>save(false);form.onsubmit=submit=>{submit.preventDefault();save(true)}
+  }catch(error){failure(error)}
+}
+
 async function renderEvent(id,context){
   context??=await getContext()
   layout('参加回答','<a class="button secondary" href="#/">部員画面へ戻る</a>')
   try{
     const {data:event,error}=await supabase.from('events').select('*,event_responses(*)').eq('id',id).single()
     const member=context.member
-    if(error)throw error;hideMessage();const existing=event.event_responses?.[0],view=document.querySelector('#view')
+    if(error)throw error;if(event.genre==='exhibition')return renderExhibitionEvent(event,context);hideMessage();const existing=event.event_responses?.[0],view=document.querySelector('#view')
     let cameraRemaining=0
     if(event.camera_enabled){const {data,error:cameraError}=await supabase.rpc('get_camera_remaining',{p_event_id:id});if(cameraError)throw cameraError;cameraRemaining=data}
     view.innerHTML=`<section class="panel"><span class="tag">${eventLabel(event)}</span><h2>${esc(event.title)}</h2><dl><dt>日時</dt><dd>${fmt(event.starts_at)}${event.ends_at?` 〜 ${fmt(event.ends_at)}`:''}</dd><dt>場所</dt><dd>${esc(event.place)}</dd><dt>連絡先</dt><dd>${esc(event.contact)}</dd>${event.fee_enabled?`<dt>費用</dt><dd>${event.fee.toLocaleString()}円</dd>`:''}${event.payment_deadline_enabled&&event.payment_deadline?`<dt>支払期限</dt><dd>${fmt(event.payment_deadline)}</dd>`:''}</dl><p class="copy">${esc(event.details)}</p></section><section id="response" class="panel"></section>`
