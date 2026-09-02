@@ -112,6 +112,7 @@ async function renderArchives(){
 }
 
 async function renderEvent(id,context){
+  context??=await getContext()
   layout('参加回答','<a class="button secondary" href="#/">部員画面へ戻る</a>')
   try{
     const {data:event,error}=await supabase.from('events').select('*,event_responses(*)').eq('id',id).single()
