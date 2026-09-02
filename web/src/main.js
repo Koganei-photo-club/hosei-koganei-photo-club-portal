@@ -129,17 +129,43 @@ async function renderEvent(id,context){
 }
 
 async function renderAdmin(context){
+  context??=await getContext()
   layout('予定管理','<a class="button secondary" href="#/">部員画面</a><button id="logout" class="secondary">ログアウト</button>')
   document.querySelector('#logout').onclick=()=>supabase.auth.signOut()
   try{
     if(!context.admin)throw new Error('管理者権限がありません。')
     const {data:events,error}=await supabase.from('events').select('*').is('deleted_at',null).order('updated_at',{ascending:false});if(error)throw error
-    hideMessage();const view=document.querySelector('#view');view.innerHTML=`<div class="actions"><button id="newEvent">新規予定を作成</button></div><section class="panel"><div id="adminList"></div></section><section id="editor" class="panel hidden"></section>`
+    hideMessage();const view=document.querySelector('#view');view.innerHTML=`<div class="admin-nav"><button id="showEvents" class="secondary">予定管理</button><button id="showReceipt" class="secondary">領収証発行</button></div><section id="eventAdmin"><div class="actions"><button id="newEvent">新規予定を作成</button></div><section class="panel"><div id="adminList"></div></section><section id="editor" class="panel hidden"></section></section><section id="receiptAdmin" class="panel hidden"><span class="tag">MEMBERSHIP RECEIPT</span><h2>部費領収証を発行</h2><p class="muted">既存部員は大学メールから情報を呼び出せます。登録と同時に年度在籍が有効になります。</p><form id="receiptForm" class="form-grid"><label class="full">大学メールアドレス<div class="inline-field"><input type="email" name="email" required autocomplete="off"><button type="button" id="findMember" class="secondary">名簿から検索</button></div></label><label>氏名<input name="name" required></label><label>学年<input name="grade" required placeholder="B1 / M1"></label><label>学部（学部生）<input name="faculty"></label><label>学科（学部生）<input name="department"></label><label>研究科（院生）<input name="graduate_school"></label><label>専攻（院生）<input name="major"></label><label>性別<select name="gender"><option value=""></option><option>男性</option><option>女性</option><option>その他</option><option>回答しない</option></select></label><label>LINEの名前<input name="line_name" required></label><label>前年度在籍状況<select name="previous_member"><option value=""></option><option>在籍</option><option>未在籍</option><option>不明</option></select></label><label>年度<input type="number" name="fiscal_year" min="2000" max="2200" required value="${fiscalYear()}"></label><label>金額<input type="number" name="amount" min="0" required value="6000"></label><div class="full notice">但書は「<strong><span id="receiptYear">${fiscalYear()}</span>年度部費として</strong>」で記録されます。</div><div class="actions full"><button id="issueReceipt">年度在籍登録・領収証発行</button></div></form><section id="receiptResult" class="receipt-result hidden"></section></section>`
     const list=document.querySelector('#adminList');if(!events.length)list.innerHTML='<p>予定はまだありません。</p>'
     events.forEach(event=>list.insertAdjacentHTML('beforeend',`<article class="admin-row" data-id="${event.id}"><div><span class="tag">${event.status==='draft'?'下書き':event.published?'公開中':'非公開'}</span><h3>${esc(event.title)}</h3><p>${fmt(event.starts_at)}</p></div><div class="actions"><button class="secondary edit">編集</button><button class="secondary publish">${event.published?'非公開にする':'公開する'}</button><button class="danger delete">削除</button></div></article>`))
     list.querySelectorAll('.admin-row').forEach(row=>{const event=events.find(e=>e.id===row.dataset.id);row.querySelector('.edit').onclick=()=>renderEditor(event);row.querySelector('.publish').onclick=async()=>{if(!confirm(`「${event.title}」の公開状態を変更しますか？`))return;await supabase.from('events').update({published:!event.published,updated_at:new Date().toISOString()}).eq('id',event.id);renderAdmin()};row.querySelector('.delete').onclick=async()=>{if(!confirm(`「${event.title}」を削除しますか？\n回答記録は保持されます。`))return;const {error}=await supabase.from('events').update({deleted_at:new Date().toISOString(),published:false}).eq('id',event.id);if(error)failure(error);else renderAdmin()}})
     document.querySelector('#newEvent').onclick=()=>renderEditor(null)
+    const eventAdmin=document.querySelector('#eventAdmin'),receiptAdmin=document.querySelector('#receiptAdmin')
+    document.querySelector('#showEvents').onclick=()=>{eventAdmin.classList.remove('hidden');receiptAdmin.classList.add('hidden')}
+    document.querySelector('#showReceipt').onclick=()=>{eventAdmin.classList.add('hidden');receiptAdmin.classList.remove('hidden')}
+    setupReceiptForm()
   }catch(error){failure(error)}
+}
+
+function setupReceiptForm(){
+  const form=document.querySelector('#receiptForm'),result=document.querySelector('#receiptResult')
+  form.fiscal_year.oninput=()=>document.querySelector('#receiptYear').textContent=form.fiscal_year.value||'----'
+  document.querySelector('#findMember').onclick=async()=>{
+    const email=form.email.value.trim().toLowerCase();if(!email){failure('大学メールアドレスを入力してください。');return}
+    const {data,error}=await supabase.from('members').select('*').eq('email',email).maybeSingle()
+    if(error){failure(error);return}if(!data){message('名簿に未登録です。新規部員として必要事項を入力してください。');return}
+    for(const name of ['name','faculty','grade','department','graduate_school','major','gender','line_name','previous_member'])form.elements[name].value=data[name]||''
+    message(`${data.member_no} の部員情報を読み込みました。`)
+  }
+  form.onsubmit=async event=>{
+    event.preventDefault();const button=document.querySelector('#issueReceipt')
+    if(!confirm(`${form.elements.name.value}さんの${form.elements.fiscal_year.value}年度部費 ${Number(form.elements.amount.value).toLocaleString()}円を記録しますか？`))return
+    button.disabled=true;result.classList.add('hidden')
+    const values=Object.fromEntries(new FormData(form));values.fiscal_year=Number(values.fiscal_year);values.amount=Number(values.amount)
+    const {data,error}=await supabase.rpc('issue_membership_receipt',Object.fromEntries(Object.entries(values).map(([key,value])=>[`p_${key}`,value])))
+    button.disabled=false;if(error){failure(error);return}
+    result.innerHTML=`<span class="tag">ISSUED</span><h3>領収証記録を保存しました</h3><dl><dt>部員ID</dt><dd>${esc(data.memberId)}</dd><dt>領収証ID</dt><dd>${esc(data.receiptId)}</dd><dt>但書</dt><dd>${esc(data.description)}</dd></dl>`;result.classList.remove('hidden');message('年度在籍登録と領収証発行が完了しました。');form.reset();form.fiscal_year.value=fiscalYear();form.amount.value=6000;form.fiscal_year.oninput()
+  }
 }
 
 function renderEditor(event){
