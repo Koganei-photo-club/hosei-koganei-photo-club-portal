@@ -1,0 +1,34 @@
+<script>
+const baseAdminInit=init;
+init=function(data){
+  if(!data){
+    fail({message:'管理データを取得できませんでした。ページを再読み込みしてください。'});
+    return;
+  }
+  baseAdminInit(data);
+  renderArchiveList(data.archiveExhibitions||[]);
+};
+
+function renderArchiveList(items){
+  const root=document.getElementById('archiveList');
+  if(!root)return;
+  root.innerHTML=items.length?'':'<p>取り込み済みの写真展はありません。</p>';
+  items.forEach(item=>{
+    const row=document.createElement('div');
+    row.className='admin-row';
+    row.innerHTML=`<div><span class="tag">${item.isPublished?'出展者へ公開中':'非公開'}</span><h3>${esc(item.title)}</h3><p>${item.workCount}作品・回答者${item.responseCount}名・作品別感想${item.commentCount}件</p></div><label><input type="checkbox" ${item.isPublished?'checked':''}> 出展者へ公開</label>`;
+    row.querySelector('input').onchange=event=>google.script.run
+      .withSuccessHandler(()=>{
+        item.isPublished=event.target.checked;
+        renderArchiveList(items);
+        show('写真展アーカイブの公開設定を変更しました。');
+      })
+      .withFailureHandler(error=>{
+        event.target.checked=!event.target.checked;
+        fail(error);
+      })
+      .setArchiveExhibitionPublished(authToken,item.exhibitionKey,event.target.checked);
+    root.appendChild(row);
+  });
+}
+</script>

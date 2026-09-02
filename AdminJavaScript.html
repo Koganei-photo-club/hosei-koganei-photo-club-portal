@@ -1,0 +1,176 @@
+<script>
+const adminQuery=s=>document.querySelector(s);
+let events=[];
+let editorCleanSnapshot='';
+
+document.addEventListener('DOMContentLoaded',()=>{
+  if(!adminQuery('#new')||!document.getElementById('authGate'))return;
+  const eventForm=adminQuery('#eventForm');
+  document.querySelectorAll('.tabs button').forEach(button=>button.onclick=()=>tab(button.dataset.tab));
+  adminQuery('#new').onclick=()=>{clearEditor();tab('edit')};
+  eventForm.onsubmit=event=>{event.preventDefault();save(false)};
+  adminQuery('#draft').onclick=()=>save(true);
+  eventForm.elements.genre.onchange=conditions;
+  eventForm.elements.subtype.onchange=conditions;
+  eventForm.addEventListener('input',updateSaveButtons);
+  eventForm.addEventListener('change',updateSaveButtons);
+  adminQuery('#receiptForm [name=fiscalYear]').value=(()=>{const date=new Date();return date.getFullYear()-(date.getMonth()<3?1:0)})();
+  adminQuery('#receiptForm').onsubmit=issue;
+  clearEditor();
+  beginGoogleAuth((token,context)=>{
+    if(!context.isAdmin){
+      document.querySelector('main').innerHTML='<div class="notice">このアカウントには幹部管理権限がありません。</div>';
+      return;
+    }
+    google.script.run.withSuccessHandler(init).withFailureHandler(fail).getAdminData(token);
+  });
+});
+
+function init(data){
+  if(!data){fail({message:'管理データを取得できませんでした。ページを再読み込みしてください。'});return}
+  events=Array.isArray(data.events)?data.events:[];
+  const participantBook=adminQuery('#participantBook');
+  if(participantBook&&data.participantViewerUrl){participantBook.href=data.participantViewerUrl;participantBook.classList.remove('hidden')}
+  const message=adminQuery('#msg');
+  if(message&&message.textContent==='読み込んでいます…')message.classList.add('hidden');
+  renderList();
+}
+
+function tab(id){
+  document.querySelectorAll('.tab').forEach(element=>element.classList.toggle('hidden',element.id!==id));
+  document.querySelectorAll('.tabs button').forEach(button=>button.classList.toggle('active',button.dataset.tab===id));
+}
+
+function renderList(){
+  const root=adminQuery('#list');
+  root.innerHTML=events.length?'':'<p>予定はまだありません。</p>';
+  events.forEach(item=>{
+    const row=document.createElement('div');
+    const published=truth(item.Published);
+    row.className='admin-row';
+    row.innerHTML=`<div><span class="tag">${item.Status==='draft'?'下書き':published?'公開中':'非公開'}</span><h3>${esc(item.Title)}</h3><p>${esc(item.Genre)} · ${fmt(item.StartAt)}</p></div><div><button class="secondary edit">編集</button><button class="secondary delete">削除</button><label><input type="checkbox" ${published?'checked':''} ${item.Status==='draft'?'disabled':''}> 公開</label></div>`;
+    row.querySelector('.edit').onclick=()=>edit(item);
+    row.querySelector('.delete').onclick=()=>confirmDeleteEvent(item);
+    const checkbox=row.querySelector('input');
+    checkbox.onchange=()=>confirmPublishedChange(item,checkbox);
+    root.appendChild(row);
+  });
+}
+
+function confirmDeleteEvent(item){
+  if(!window.confirm(`「${item.Title}」を削除しますか？\n\n自動生成された参加者閲覧シートも削除されます。元の回答台帳は保存されます。`))return;
+  google.script.run
+    .withSuccessHandler(result=>{
+      show(result.message);
+      google.script.run.withSuccessHandler(init).withFailureHandler(fail).getAdminData(authToken);
+    })
+    .withFailureHandler(fail)
+    .deleteEvent(authToken,item.EventId);
+}
+
+function confirmPublishedChange(item,checkbox){
+  const next=checkbox.checked;
+  checkbox.checked=!next;
+  const action=next?'公開':'非公開';
+  if(!window.confirm(`「${item.Title}」を${action}にしますか？`))return;
+  checkbox.disabled=true;
+  google.script.run
+    .withSuccessHandler(()=>{
+      item.Published=next;
+      renderList();
+      show(`「${item.Title}」を${action}にしました。`);
+    })
+    .withFailureHandler(error=>{renderList();fail(error)})
+    .setEventPublished(authToken,item.EventId,next);
+}
+
+function edit(item){
+  const form=adminQuery('#eventForm');
+  form.reset();
+  const map={eventId:'EventId',createdAt:'CreatedAt',title:'Title',genre:'Genre',subtype:'Subtype',startAt:'StartAt',endAt:'EndAt',place:'Place',contact:'Contact',details:'Details',fee:'Fee',paymentDeadline:'PaymentDeadline',exhibitionTitle:'ExhibitionTitle',maxWorks:'MaxWorks',minShiftPeople:'MinShiftPeople',cameraEnabled:'CameraEnabled',disposableEnabled:'DisposableEnabled'};
+  Object.keys(map).forEach(name=>{
+    const element=form.elements[name],value=item[map[name]];
+    if(element.type==='checkbox')element.checked=truth(value);
+    else if(element.type==='datetime-local')element.value=local(value);
+    else element.value=value??'';
+  });
+  form.elements.shiftSlotsText.value=parse(item.ShiftSlotsJson).join('\n');
+  conditions();
+  markEditorClean();
+  tab('edit');
+}
+
+function clearEditor(){
+  const form=adminQuery('#eventForm');
+  form.reset();
+  conditions();
+  markEditorClean();
+}
+
+function conditions(){
+  const form=adminQuery('#eventForm'),genre=form.elements.genre.value,subtype=form.elements.subtype.value;
+  adminQuery('#subtypeBox').classList.toggle('hidden',genre!=='meeting');
+  adminQuery('#shootingFields').classList.toggle('hidden',!(genre==='meeting'&&subtype==='shooting'));
+  adminQuery('#campFields').classList.toggle('hidden',genre!=='camp');
+  adminQuery('#exhibitionFields').classList.toggle('hidden',genre!=='exhibition');
+}
+
+function editorSnapshot(){
+  const form=adminQuery('#eventForm'),data=payload(form);
+  data.cameraEnabled=form.elements.cameraEnabled.checked;
+  data.disposableEnabled=form.elements.disposableEnabled.checked;
+  return JSON.stringify(data);
+}
+
+function markEditorClean(){editorCleanSnapshot=editorSnapshot();updateSaveButtons()}
+
+function updateSaveButtons(){
+  const disabled=editorSnapshot()===editorCleanSnapshot;
+  adminQuery('#draft').disabled=disabled;
+  adminQuery('#eventForm button[type=submit]').disabled=disabled;
+}
+
+function setSaveBusy(busy){
+  adminQuery('#draft').disabled=busy;
+  adminQuery('#eventForm button[type=submit]').disabled=busy;
+}
+
+function payload(form){return Object.fromEntries(new FormData(form).entries())}
+
+function save(draft){
+  const form=adminQuery('#eventForm'),data=payload(form);
+  data.cameraEnabled=form.elements.cameraEnabled.checked;
+  data.disposableEnabled=form.elements.disposableEnabled.checked;
+  data.shiftSlots=data.shiftSlotsText.split('\n').map(value=>value.trim()).filter(Boolean);
+  setSaveBusy(true);
+  google.script.run
+    .withSuccessHandler(result=>{
+      form.elements.eventId.value=result.eventId;
+      markEditorClean();
+      show(result.message);
+      google.script.run.withSuccessHandler(init).withFailureHandler(fail).getAdminData(authToken);
+      tab('list');
+    })
+    .withFailureHandler(error=>{updateSaveButtons();fail(error)})
+    .saveEvent(authToken,data,draft);
+}
+
+function issue(event){
+  event.preventDefault();
+  google.script.run
+    .withSuccessHandler(result=>{
+      show(`${result.message||'登録しました。'} 部員ID: ${result.memberId}／領収証ID: ${result.receiptId}`);
+      event.target.reset();
+    })
+    .withFailureHandler(fail)
+    .issueMembershipReceipt(authToken,payload(event.target));
+}
+
+function show(message){const box=adminQuery('#msg');box.textContent=message;box.classList.remove('hidden')}
+function fail(error){show(error&&error.message||'処理に失敗しました')}
+function truth(value){return value===true||String(value).toLowerCase()==='true'}
+function parse(value){try{return JSON.parse(value||'[]')}catch(error){return[]}}
+function local(value){if(!value)return'';const date=new Date(value);return new Date(date-date.getTimezoneOffset()*60000).toISOString().slice(0,16)}
+function fmt(value){return value?new Date(value).toLocaleString('ja-JP'):'日時未定'}
+function esc(value){const element=document.createElement('div');element.textContent=String(value??'');return element.innerHTML}
+</script>

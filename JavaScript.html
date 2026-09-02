@@ -1,0 +1,48 @@
+<style>.archive-card{grid-column:1/-1}.archive-works{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-top:18px}.archive-work{padding:18px;border:1px solid var(--line);background:#fafbf8}.archive-work-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.archive-work h4{margin:.2em 0;font-size:1.1rem}.archive-stat{text-align:right}.archive-stat b,.archive-stat span{display:block}.archive-stat b{color:var(--green);font-size:1.3rem}.archive-image{margin:12px 0}.archive-image img{display:block;width:100%;max-height:520px;object-fit:contain;background:#eef1ed}.archive-work details{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}.archive-work summary{cursor:pointer;font-weight:700}.comment-list{padding-left:1.2em}.comment-list li{margin:.6em 0}.muted{color:#718078;font-size:.9rem}</style><script>
+const portalQuery=s=>document.querySelector(s);
+document.addEventListener('DOMContentLoaded',()=>{if(!portalQuery('#notice')||!document.getElementById('authGate'))return;beginGoogleAuth(token=>google.script.run.withSuccessHandler(render).withFailureHandler(fail).getPortalData(token));});
+function render(d){
+  portalQuery('#notice').classList.add('hidden');
+  if(d.isAdmin){portalQuery('#admin').classList.remove('hidden');portalQuery('#admin').href=d.webAppUrl+'?page=admin'}
+  if(d.member){
+    const membership=d.member.membership;
+    const membershipText=membership
+      ?`${membership.fiscalYear}年度 在籍中${membership.joinedAt?'（登録日：'+dateOnly(membership.joinedAt)+'）':''}`
+      :`${d.member.currentFiscalYear}年度の在籍登録はありません`;
+    portalQuery('#profile').classList.remove('hidden');
+    portalQuery('#profile').innerHTML=`<span class="tag">SIGNED IN</span><h2>${esc(d.member.name)}さん</h2><p>${esc([d.member.grade,d.member.faculty,d.member.department].filter(Boolean).join('・'))}</p><p>部員ID：${esc(d.member.memberId)}</p><p><strong>${esc(membershipText)}</strong></p>`;
+  }else show('部員名簿に登録されていません。申込には名簿登録が必要です。');
+  const r=portalQuery('#events');
+  if(!d.events.length)r.innerHTML='<div class="empty panel">現在参加できる活動はありません。</div>';
+  d.events.forEach(e=>{
+    const a=document.createElement('a'),response=e.response;
+    a.className='event-card';
+    a.href=d.webAppUrl+'?page=form&event='+encodeURIComponent(e.id);
+    const answer=response?`<p><strong>${response.cancelledAt?'キャンセル済み':'回答済み：'+esc(response.attendance)}</strong>（${dateOnly(response.submittedAt)}）</p>`:'';
+    a.innerHTML=`<div><span class="tag">${label(e)}</span><h3>${esc(e.title)}</h3><p>${fmt(e.startAt)} · ${esc(e.place)}</p>${answer}</div><span class="arrow">→</span>`;
+    r.appendChild(a);
+  });
+  if(d.photo.length){
+    portalQuery('#photoSection').classList.remove('hidden');
+    d.photo.forEach(archive=>{
+      const article=document.createElement('article');article.className='panel archive-card';
+      article.innerHTML=`<span class="tag">EXHIBITION ARCHIVE</span><h3>${esc(archive.title)}</h3><p>アンケート回答者数：${archive.responseCount}名</p><div class="archive-works"></div>`;
+      const worksRoot=article.querySelector('.archive-works');
+      archive.works.forEach(work=>{
+        const item=document.createElement('section');item.className='archive-work';
+        item.innerHTML=`<div class="archive-work-head"><div><span class="tag">No.${esc(work.displayNo)}</span><h4>${esc(work.title)}</h4></div><div class="archive-stat"><b>${work.favoriteCount}票</b><span>${work.favoriteRate}%</span></div></div>${work.hasImage?`<button type="button" class="secondary image-button" data-work="${esc(work.workUuid)}">作品画像を表示</button><div class="archive-image hidden"></div>`:'<p class="muted">作品画像は非公開です。</p>'}<details><summary>寄せられた感想（${work.comments.length}件）</summary>${work.comments.length?`<ul class="comment-list">${work.comments.map(c=>`<li>${esc(c)}</li>`).join('')}</ul>`:'<p>作品への感想はありません。</p>'}</details>`;
+        worksRoot.appendChild(item);
+      });
+      portalQuery('#photo').appendChild(article);
+    });
+    document.querySelectorAll('.image-button').forEach(button=>button.onclick=()=>loadArchiveImage(button));
+  }
+}
+function loadArchiveImage(button){button.disabled=true;button.textContent='画像を読み込んでいます…';google.script.run.withSuccessHandler(dataUrl=>{const box=button.nextElementSibling;box.innerHTML=`<img src="${dataUrl}" alt="作品画像" loading="lazy">`;box.classList.remove('hidden');button.remove()}).withFailureHandler(error=>{button.disabled=false;button.textContent='作品画像を表示';show(error.message||'画像を読み込めませんでした。')}).getArchiveWorkImage(authToken,button.dataset.work)}
+function label(e){return e.genre==='camp'?'合宿':e.genre==='exhibition'?'写真展':e.subtype==='dining'?'全体会・お食事会':'全体会・撮影会'}
+function fmt(v){return v?new Date(v).toLocaleString('ja-JP'):'日時未定'}
+function dateOnly(v){return v?new Date(v).toLocaleDateString('ja-JP'):''}
+function esc(v){const d=document.createElement('div');d.textContent=String(v??'');return d.innerHTML}
+function show(s){portalQuery('#notice').textContent=s;portalQuery('#notice').classList.remove('hidden')}
+function fail(e){show(e.message||'読み込みに失敗しました。')}
+</script>

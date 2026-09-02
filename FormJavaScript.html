@@ -1,0 +1,78 @@
+<script>
+const formQuery=s=>document.querySelector(s);
+
+document.addEventListener('DOMContentLoaded',()=>{
+  const form=formQuery('#form');
+  if(!form||!document.getElementById('authGate'))return;
+  form.onsubmit=send;
+  const eventId=form.elements.eventId.value;
+  beginGoogleAuth(token=>google.script.run.withSuccessHandler(init).withFailureHandler(fail).getEventFormData(token,eventId));
+});
+
+function init(data){
+  const event=data.event,eventSection=formQuery('#event');
+  formQuery('#msg').classList.add('hidden');
+  eventSection.classList.remove('hidden');
+  formQuery('#title').textContent=event.title;
+  eventSection.innerHTML=`<span class="tag">${label(event)}</span><h2>${esc(event.title)}</h2><dl><dt>日時</dt><dd>${fmt(event.startAt)}${event.endAt?' 〜 '+fmt(event.endAt):''}</dd><dt>場所</dt><dd>${esc(event.place)}</dd><dt>連絡先</dt><dd>${esc(event.contact)}</dd>${event.fee?`<dt>費用</dt><dd>${Number(event.fee).toLocaleString()}円（期限 ${fmt(event.paymentDeadline)}）</dd>`:''}</dl><p>${esc(event.details)}</p>`;
+  if(data.existingResponse){
+    renderExistingResponse(data.existingResponse,eventSection);
+    return;
+  }
+  const form=formQuery('#form');
+  form.classList.remove('hidden');
+  formQuery('#member').innerHTML=`<h3>${esc(data.member.name)}さん</h3><p>${esc([data.member.grade,data.member.faculty,data.member.department].filter(Boolean).join('・'))}</p>`;
+  form.elements.lineName.value=data.member.lineName||'';
+  let participantOptions='';
+  if(event.cameraEnabled)participantOptions+=`<label><input type="checkbox" name="camera" ${data.cameraRemaining===0?'disabled':''}> 貸出カメラを希望（残り ${data.cameraRemaining}台）</label>`;
+  if(event.disposableEnabled)participantOptions+='<label><input type="checkbox" name="disposableCamera"> 写るんですを希望</label>';
+  if(event.genre==='camp'||event.subtype==='dining')participantOptions+=`<fieldset><legend>アレルギー（参加する場合は必須）</legend><label>主要なアレルギー<select name="allergies" required><option value="">選択</option><option>なし</option><option>卵</option><option>乳</option><option>小麦</option><option>えび</option><option>かに</option><option>そば</option><option>落花生</option><option>その他</option></select></label><label>その他・詳細<input name="otherAllergy"></label></fieldset>`;
+  formQuery('#options').innerHTML=`<fieldset><legend>出欠（必須）</legend><label><input type="radio" name="attendance" value="参加" required> 参加</label><label><input type="radio" name="attendance" value="不参加" required> 不参加</label></fieldset><div id="participantOnly">${participantOptions}</div>`;
+  if(event.genre==='camp')formQuery('#agreement').innerHTML=`<div class="agreement"><p>本申込みの送信後は、疾病その他やむを得ない事情を除き、参加者の都合による取消しは原則として認められません。また、表示された支払期限までに費用の全額が確認できない場合、申込みは通知なく自動的に取り消されます。</p><label><input type="checkbox" name="agreement" required> 上記条件を確認し、同意します</label></div>`;
+  form.querySelectorAll('[name=attendance]').forEach(radio=>radio.onchange=toggleParticipantFields);
+}
+
+function toggleParticipantFields(){
+  const form=formQuery('#form'),participating=form.querySelector('[name=attendance]:checked')?.value==='参加';
+  const participantOnly=formQuery('#participantOnly'),agreement=formQuery('#agreement');
+  if(participantOnly){participantOnly.classList.toggle('hidden',!participating);participantOnly.querySelectorAll('input,select,textarea').forEach(control=>control.disabled=!participating)}
+  if(agreement){agreement.classList.toggle('hidden',!participating);agreement.querySelectorAll('input,select,textarea').forEach(control=>control.disabled=!participating)}
+}
+
+function renderExistingResponse(response,eventSection){
+  const details=[];
+  details.push(`<dt>回答</dt><dd><strong>${response.cancelledAt?'キャンセル済み':esc(response.attendance)}</strong></dd>`);
+  details.push(`<dt>回答日時</dt><dd>${fmt(response.submittedAt)}</dd>`);
+  if(response.attendance==='参加'){
+    if(response.camera)details.push('<dt>貸出カメラ</dt><dd>希望する</dd>');
+    if(response.disposableCamera)details.push('<dt>写るんです</dt><dd>希望する</dd>');
+    if(response.allergies)details.push(`<dt>アレルギー</dt><dd>${esc([response.allergies,response.otherAllergy].filter(Boolean).join('・'))}</dd>`);
+    if(response.paymentStatus&&response.paymentStatus!=='not_required')details.push(`<dt>支払い状況</dt><dd>${esc(paymentLabel(response.paymentStatus))}</dd>`);
+  }
+  if(response.note)details.push(`<dt>備考</dt><dd>${esc(response.note)}</dd>`);
+  const section=document.createElement('section');
+  section.className='panel';
+  section.innerHTML=`<span class="tag">YOUR RESPONSE</span><h2>回答済みです</h2><dl>${details.join('')}</dl><p>同じ予定へ複数回答することはできません。変更が必要な場合は幹部へ連絡してください。</p>`;
+  eventSection.insertAdjacentElement('afterend',section);
+}
+
+function send(event){
+  event.preventDefault();
+  const form=event.target,data=Object.fromEntries(new FormData(form).entries());
+  data.camera=form.elements.camera?.checked||false;
+  data.disposableCamera=form.elements.disposableCamera?.checked||false;
+  data.agreement=form.elements.agreement?.checked||false;
+  form.querySelector('button').disabled=true;
+  google.script.run
+    .withSuccessHandler(result=>{show(result.message);form.classList.add('hidden')})
+    .withFailureHandler(error=>{fail(error);form.querySelector('button').disabled=false})
+    .submitEventResponse(authToken,data);
+}
+
+function paymentLabel(value){return value==='paid'?'支払い済み':value==='unpaid'?'未払い':value==='cancelled'?'キャンセル':'対象外'}
+function label(event){return event.genre==='camp'?'合宿':event.genre==='exhibition'?'写真展':event.subtype==='dining'?'全体会・お食事会':'全体会・撮影会'}
+function fmt(value){return value?new Date(value).toLocaleString('ja-JP'):'未定'}
+function esc(value){const element=document.createElement('div');element.textContent=String(value??'');return element.innerHTML}
+function show(message){formQuery('#msg').textContent=message;formQuery('#msg').classList.remove('hidden')}
+function fail(error){show(error&&error.message||'読み込みに失敗しました')}
+</script>
