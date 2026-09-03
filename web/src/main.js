@@ -2449,7 +2449,7 @@ function renderEditor(event, initialGenre = "meeting") {
         ? supabase.from("events").update(payload).eq("id", event.id)
         : supabase.from("events").insert(payload);
       const { data: savedEvent, error } = await query.select("id").single();
-      if (error) throw error;
+      if (error) throw new Error(`予定を保存できませんでした：${error.message}`);
       if (dmFile) {
         const dmPath = `${exhibitionKey}/dm.${publicImageExtension(dmFile)}`,
           { error: uploadError } = await supabase.storage
@@ -2459,12 +2459,14 @@ function renderEditor(event, initialGenre = "meeting") {
               contentType: dmFile.type,
               cacheControl: "3600",
             });
-        if (uploadError) throw uploadError;
+        if (uploadError)
+          throw new Error(`DM画像を保存できませんでした：${uploadError.message}`);
         const { error: pathError } = await supabase
           .from("events")
           .update({ dm_image_path: dmPath })
           .eq("id", savedEvent.id);
-        if (pathError) throw pathError;
+        if (pathError)
+          throw new Error(`DM画像の登録情報を保存できませんでした：${pathError.message}`);
       }
       adminGenreTab = values.genre;
       await renderAdmin();
