@@ -4,6 +4,7 @@ import { configured, googleClientId, supabase } from "./supabase.js";
 const app = document.querySelector("#app");
 let session = null;
 let overdueChecked = false;
+let adminGenreTab = "meeting";
 
 const esc = (value) => {
   const node = document.createElement("div");
@@ -1024,9 +1025,8 @@ async function renderAdmin(context) {
     if (error) throw error;
     hideMessage();
     const view = document.querySelector("#view");
-    view.innerHTML = `<div class="admin-nav"><button id="showEvents" class="secondary">予定管理</button><button id="showReceipt" class="secondary">領収証発行</button></div><section id="eventAdmin"><div class="actions"><button id="newEvent">新規予定を作成</button></div><section class="panel"><div id="adminList"></div></section><section id="editor" class="panel hidden"></section><section id="participantAdmin" class="panel hidden"></section></section><section id="receiptAdmin" class="panel hidden"><span class="tag">MEMBERSHIP RECEIPT</span><h2>部費領収証を発行</h2><p class="muted">既存部員は大学メールから情報を呼び出せます。登録と同時に年度在籍が有効になります。</p><form id="receiptForm" class="form-grid"><label class="full">大学メールアドレス<div class="inline-field"><input type="email" name="email" required autocomplete="off"><button type="button" id="findMember" class="secondary">名簿から検索</button></div></label><label>氏名<input name="name" required></label><label>学年<input name="grade" required placeholder="B1 / M1"></label><label>学部（学部生）<input name="faculty"></label><label>学科（学部生）<input name="department"></label><label>研究科（院生）<input name="graduate_school"></label><label>専攻（院生）<input name="major"></label><label>性別<select name="gender"><option value=""></option><option>男性</option><option>女性</option><option>その他</option><option>回答しない</option></select></label><label>LINEの名前<input name="line_name" required></label><label>前年度在籍状況<select name="previous_member"><option value=""></option><option>在籍</option><option>未在籍</option><option>不明</option></select></label><label>年度<input type="number" name="fiscal_year" min="2000" max="2200" required value="${fiscalYear()}"></label><label>金額<input type="number" name="amount" min="0" required value="6000"></label><div class="full notice">但書は「<strong><span id="receiptYear">${fiscalYear()}</span>年度部費として</strong>」で記録されます。</div><div class="actions full"><button id="issueReceipt">年度在籍登録・領収証発行</button></div></form><section id="receiptResult" class="receipt-result hidden"></section></section>`;
+    view.innerHTML = `<div class="admin-nav"><button id="showEvents" class="secondary">予定管理</button><button id="showReceipt" class="secondary">領収証発行</button></div><section id="eventAdmin"><div class="event-genre-tabs" role="tablist" aria-label="予定ジャンル"><button type="button" data-genre="meeting">全体会</button><button type="button" data-genre="camp">合宿</button><button type="button" data-genre="exhibition">写真展</button></div><div class="event-list-heading"><div><p class="eyebrow">EVENT MANAGEMENT</p><h2 id="eventGenreTitle"></h2></div><button id="newEvent">新規予定を作成</button></div><section class="panel"><div id="adminList"></div><p id="emptyGenre" class="muted hidden">このジャンルの予定はまだありません。</p></section><section id="editor" class="panel hidden"></section><section id="participantAdmin" class="panel hidden"></section></section><section id="receiptAdmin" class="panel hidden"><span class="tag">MEMBERSHIP RECEIPT</span><h2>部費領収証を発行</h2><p class="muted">既存部員は大学メールから情報を呼び出せます。登録と同時に年度在籍が有効になります。</p><form id="receiptForm" class="form-grid"><label class="full">大学メールアドレス<div class="inline-field"><input type="email" name="email" required autocomplete="off"><button type="button" id="findMember" class="secondary">名簿から検索</button></div></label><label>氏名<input name="name" required></label><label>学年<input name="grade" required placeholder="B1 / M1"></label><label>学部（学部生）<input name="faculty"></label><label>学科（学部生）<input name="department"></label><label>研究科（院生）<input name="graduate_school"></label><label>専攻（院生）<input name="major"></label><label>性別<select name="gender"><option value=""></option><option>男性</option><option>女性</option><option>その他</option><option>回答しない</option></select></label><label>LINEの名前<input name="line_name" required></label><label>前年度在籍状況<select name="previous_member"><option value=""></option><option>在籍</option><option>未在籍</option><option>不明</option></select></label><label>年度<input type="number" name="fiscal_year" min="2000" max="2200" required value="${fiscalYear()}"></label><label>金額<input type="number" name="amount" min="0" required value="6000"></label><div class="full notice">但書は「<strong><span id="receiptYear">${fiscalYear()}</span>年度部費として</strong>」で記録されます。</div><div class="actions full"><button id="issueReceipt">年度在籍登録・領収証発行</button></div></form><section id="receiptResult" class="receipt-result hidden"></section></section>`;
     const list = document.querySelector("#adminList");
-    if (!events.length) list.innerHTML = "<p>予定はまだありません。</p>";
     events.forEach((event) =>
       list.insertAdjacentHTML(
         "beforeend",
@@ -1035,6 +1035,7 @@ async function renderAdmin(context) {
     );
     list.querySelectorAll(".admin-row").forEach((row) => {
       const event = events.find((e) => e.id === row.dataset.id);
+      row.dataset.genre = event.genre;
       row.querySelector(".participants").onclick = () =>
         renderParticipants(event);
       row.querySelector(".simulator")?.addEventListener("click", () =>
@@ -1067,7 +1068,41 @@ async function renderAdmin(context) {
         else renderAdmin();
       };
     });
-    document.querySelector("#newEvent").onclick = () => renderEditor(null);
+    const genreLabels = {
+        meeting: "全体会",
+        camp: "合宿",
+        exhibition: "写真展",
+      },
+      genreButtons = document.querySelectorAll(".event-genre-tabs button"),
+      applyGenreTab = () => {
+        document.querySelector("#eventGenreTitle").textContent =
+          `${genreLabels[adminGenreTab]}の予定`;
+        genreButtons.forEach((button) => {
+          const active = button.dataset.genre === adminGenreTab;
+          button.classList.toggle("is-active", active);
+          button.setAttribute("aria-selected", String(active));
+        });
+        let visibleCount = 0;
+        list.querySelectorAll(".admin-row").forEach((row) => {
+          const visible = row.dataset.genre === adminGenreTab;
+          row.classList.toggle("hidden", !visible);
+          if (visible) visibleCount += 1;
+        });
+        document
+          .querySelector("#emptyGenre")
+          .classList.toggle("hidden", visibleCount > 0);
+      };
+    genreButtons.forEach((button) => {
+      button.onclick = () => {
+        adminGenreTab = button.dataset.genre;
+        document.querySelector("#editor").classList.add("hidden");
+        document.querySelector("#participantAdmin").classList.add("hidden");
+        applyGenreTab();
+      };
+    });
+    applyGenreTab();
+    document.querySelector("#newEvent").onclick = () =>
+      renderEditor(null, adminGenreTab);
     const eventAdmin = document.querySelector("#eventAdmin"),
       receiptAdmin = document.querySelector("#receiptAdmin");
     document.querySelector("#showEvents").onclick = () => {
@@ -1576,13 +1611,12 @@ function setupPlacementControls(root, event, layout, walls, workById) {
         failure(error);
         return;
       }
-      await renderExhibitionSimulator(event, layout.id);
       message(locked ? "配置を固定しました。" : "配置の固定を解除しました。");
     };
   });
   root.querySelectorAll(".placed-work").forEach((item) => {
     const form = root.querySelector(`.placement-row[data-placement-id="${item.dataset.placementId}"]`);
-    if (!form || readOnly || form.elements.locked.checked) return;
+    if (!form || readOnly) return;
     item.onpointerdown = (down) => {
       if (form.elements.locked.checked) return;
       down.preventDefault();
@@ -1915,7 +1949,7 @@ function setupReceiptForm() {
   };
 }
 
-function renderEditor(event) {
+function renderEditor(event, initialGenre = "meeting") {
   const root = document.querySelector("#editor");
   root.classList.remove("hidden");
   root.innerHTML = `<h2>${event ? "予定を編集" : "新規予定"}</h2><form id="eventForm" class="form-grid"><label class="full">予定名（必須）<input name="title" value="${esc(event?.title || "")}" required></label><label>ジャンル<select name="genre"><option value="meeting">全体会</option><option value="camp">合宿</option><option value="exhibition">写真展</option></select></label><label id="subtypeField">全体会種別<select name="subtype"><option value="shooting">撮影会</option><option value="dining">お食事会</option></select></label><label>開始日時<input type="datetime-local" name="starts_at"></label><label>終了日時<input type="datetime-local" name="ends_at"></label><label>場所<input name="place" value="${esc(event?.place || "")}"></label><label>企画幹部の連絡先<input name="contact" value="${esc(event?.contact || "")}"></label><label class="full">必要事項<textarea name="details" rows="4">${esc(event?.details || "")}</textarea></label><section id="shootingFields" class="full conditional-fields"><label><input type="checkbox" name="camera_enabled">貸出カメラを受付（上限3台）</label><label><input type="checkbox" name="disposable_enabled">写るんですを受付</label></section><section id="feeFields" class="full conditional-fields"><label><input type="checkbox" name="fee_enabled">費用を表示する</label><div id="feeAmountFields" class="form-grid nested-fields hidden"><label>費用<input type="number" name="fee" min="0"></label><label><input type="checkbox" name="payment_deadline_enabled">支払期限を表示する</label><label id="paymentDeadlineField" class="hidden">支払期限<input type="datetime-local" name="payment_deadline"></label></div></section><section id="exhibitionFields" class="full form-grid conditional-fields"><label>写真展タイトル<input name="exhibition_title"></label><label>出展可能作品数<input type="number" name="max_works" min="1"></label><label>最低シフト人数<input type="number" name="min_shift_people" min="1"></label><label class="full">シフト枠（1行1枠）<textarea name="shift_slots_text" rows="5" placeholder="8月23日 15:00〜17:00"></textarea></label></section><div class="actions full"><button type="button" id="draft" class="secondary">一時保存</button><button type="submit" id="saveEvent">保存</button></div></form>`;
@@ -1929,7 +1963,7 @@ function renderEditor(event) {
             .slice(0, 16)
         : "",
     asIso = (value) => (value ? new Date(value).toISOString() : null);
-  form.genre.value = event?.genre || "meeting";
+  form.genre.value = event?.genre || initialGenre;
   form.subtype.value = event?.subtype || "shooting";
   form.starts_at.value = local(event?.starts_at);
   form.ends_at.value = local(event?.ends_at);
@@ -2078,6 +2112,7 @@ function renderEditor(event) {
         : supabase.from("events").insert(payload);
       const { error } = await query;
       if (error) throw error;
+      adminGenreTab = values.genre;
       await renderAdmin();
       message(draft ? "下書きを保存しました。" : "予定を保存しました。");
     } catch (error) {
