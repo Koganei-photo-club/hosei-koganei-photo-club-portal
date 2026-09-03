@@ -1370,6 +1370,87 @@ async function renderExhibitionSimulator(event, preferredLayoutId = null) {
       },
     );
     addWallGuides(root);
+    const overlapCount = markPlacementOverlaps(root, placements, workById);
+    if (currentLayout) {
+      const statusBox = root.querySelector(".layout-status"),
+        readOnly = ["approved", "archived"].includes(currentLayout.status);
+      statusBox.insertAdjacentHTML(
+        "afterend",
+        `<div class="actions layout-actions"><button id="cloneLayout" class="secondary">次の版へ複製</button>${currentLayout.status !== "review" ? '<button id="reviewLayout" class="secondary">確認中にする</button>' : ""}${currentLayout.status !== "approved" ? '<button id="approveLayout">この案を承認</button>' : ""}${currentLayout.status !== "draft" ? '<button id="draftLayout" class="secondary">下書きへ戻す</button>' : ""}${currentLayout.status !== "archived" ? '<button id="archiveLayout" class="secondary">保管する</button>' : ""}<button id="printLayout" class="secondary">配置図を印刷・PDF保存</button></div>${overlapCount ? `<div class="notice error overlap-notice">作品の重なりを${overlapCount}組検出しました。赤枠の作品と座標を確認してください。</div>` : '<div class="notice overlap-notice">作品同士の重なりは検出されていません。</div>'}`,
+      );
+      if (readOnly) {
+        root
+          .querySelectorAll(
+            ".unplaced-work select,.place-work,.placement-row input,.placement-row button",
+          )
+          .forEach((control) => (control.disabled = true));
+      }
+      root.querySelector("#cloneLayout").onclick = async () => {
+        if (
+          !confirm(
+            `「${currentLayout.name} v${currentLayout.version_no}」の配置を次の版へ複製しますか？`,
+          )
+        )
+          return;
+        const { data, error } = await supabase.rpc(
+          "admin_clone_exhibition_layout",
+          { p_layout_id: currentLayout.id },
+        );
+        if (error) return failure(error);
+        await renderExhibitionSimulator(event, data.layoutId);
+        message(
+          `${data.name} v${data.versionNo}を作成し、${data.copiedPlacements}件の配置を複製しました。`,
+        );
+      };
+      const setStatus = async (status, prompt, success) => {
+        if (!confirm(prompt)) return;
+        const { error } = await supabase.rpc(
+          "admin_set_exhibition_layout_status",
+          { p_layout_id: currentLayout.id, p_status: status },
+        );
+        if (error) return failure(error);
+        await renderExhibitionSimulator(event, currentLayout.id);
+        message(success);
+      };
+      root.querySelector("#reviewLayout")?.addEventListener("click", () =>
+        setStatus(
+          "review",
+          "この配置案を確認中にしますか？",
+          "配置案を確認中にしました。",
+        ),
+      );
+      root.querySelector("#approveLayout")?.addEventListener("click", () =>
+        setStatus(
+          "approved",
+          "この配置案を承認し、写真展の現在案に設定しますか？承認後は編集できません。",
+          "配置案を承認し、現在案に設定しました。",
+        ),
+      );
+      root.querySelector("#draftLayout")?.addEventListener("click", () =>
+        setStatus(
+          "draft",
+          "この配置案を下書きへ戻しますか？現在案の指定は解除されます。",
+          "配置案を下書きへ戻しました。",
+        ),
+      );
+      root.querySelector("#archiveLayout")?.addEventListener("click", () =>
+        setStatus(
+          "archived",
+          "この配置案を保管しますか？保管後は編集できません。",
+          "配置案を保管しました。",
+        ),
+      );
+      root.querySelector("#printLayout").onclick = () => {
+        document.body.classList.add("printing-layout");
+        window.addEventListener(
+          "afterprint",
+          () => document.body.classList.remove("printing-layout"),
+          { once: true },
+        );
+        window.print();
+        setTimeout(() => document.body.classList.remove("printing-layout"), 1500);
+      };
+    }
   } catch (error) {
     failure(error);
   }
@@ -1403,8 +1484,52 @@ function addWallGuides(root) {
   });
 }
 
+function markPlacementOverlaps(root, placements, workById) {
+  let count = 0;
+  for (let firstIndex = 0; firstIndex < placements.length; firstIndex += 1) {
+    const first = placements[firstIndex],
+      firstWork = workById[first.work_id];
+    if (!firstWork) continue;
+    for (
+      let secondIndex = firstIndex + 1;
+      secondIndex < placements.length;
+      secondIndex += 1
+    ) {
+      const second = placements[secondIndex],
+        secondWork = workById[second.work_id];
+      if (!secondWork || first.wall_id !== second.wall_id) continue;
+      const horizontal =
+          Number(first.x_mm) <
+            Number(second.x_mm) + Number(secondWork.occupied_width_mm) &&
+          Number(second.x_mm) <
+            Number(first.x_mm) + Number(firstWork.occupied_width_mm),
+        firstBottom =
+          Number(first.top_from_floor_mm) -
+          Number(firstWork.occupied_height_mm),
+        secondBottom =
+          Number(second.top_from_floor_mm) -
+          Number(secondWork.occupied_height_mm),
+        vertical =
+          firstBottom < Number(second.top_from_floor_mm) &&
+          secondBottom < Number(first.top_from_floor_mm);
+      if (!horizontal || !vertical) continue;
+      count += 1;
+      for (const placement of [first, second]) {
+        const item = root.querySelector(
+          `.placed-work[data-placement-id="${placement.id}"]`,
+        );
+        item?.classList.add("has-overlap");
+        if (item)
+          item.title = `${item.title}（別作品と重なっています）`;
+      }
+    }
+  }
+  return count;
+}
+
 function setupPlacementControls(root, event, layout, walls, workById) {
   if (!layout) return;
+  const readOnly = ["approved", "archived"].includes(layout.status);
   const savePlacement = async (form, quiet = false) => {
     const work = workById[form.dataset.workId],
       wall = walls.find((item) => item.id === form.closest(".wall-panel").querySelector(".wall-canvas").dataset.wallId),
@@ -1424,6 +1549,7 @@ function setupPlacementControls(root, event, layout, walls, workById) {
           : "配置を固定";
       };
     updateLockLabel();
+    if (readOnly) return;
     form.onsubmit = async (submit) => { submit.preventDefault(); try { await savePlacement(form); await renderExhibitionSimulator(event, layout.id); } catch (error) { failure(error); } };
     form.querySelector(".remove-placement").onclick = async () => {
       if (!confirm("この作品を壁面から外しますか？作品登録自体は削除されません。")) return;
@@ -1456,7 +1582,7 @@ function setupPlacementControls(root, event, layout, walls, workById) {
   });
   root.querySelectorAll(".placed-work").forEach((item) => {
     const form = root.querySelector(`.placement-row[data-placement-id="${item.dataset.placementId}"]`);
-    if (!form || form.elements.locked.checked) return;
+    if (!form || readOnly || form.elements.locked.checked) return;
     item.onpointerdown = (down) => {
       if (form.elements.locked.checked) return;
       down.preventDefault();
@@ -1469,7 +1595,7 @@ function setupPlacementControls(root, event, layout, walls, workById) {
         item.style.left = `${x / wallWidth * 100}%`;
         item.style.top = `${(wallHeight - top) / wallHeight * 100}%`;
       };
-      item.onpointerup = async () => { item.onpointermove = null; try { await savePlacement(form, true); message("ドラッグ後の配置座標を保存しました。"); } catch (error) { failure(error); await renderExhibitionSimulator(event, layout.id); } };
+      item.onpointerup = async () => { item.onpointermove = null; try { await savePlacement(form, true); await renderExhibitionSimulator(event, layout.id); message("ドラッグ後の配置座標を保存しました。"); } catch (error) { failure(error); await renderExhibitionSimulator(event, layout.id); } };
     };
   });
 }
