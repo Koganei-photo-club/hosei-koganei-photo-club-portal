@@ -1030,13 +1030,16 @@ async function renderAdmin(context) {
     events.forEach((event) =>
       list.insertAdjacentHTML(
         "beforeend",
-        `<article class="admin-row" data-id="${event.id}"><div><span class="tag">${event.status === "draft" ? "下書き" : event.published ? "公開中" : "非公開"}</span><h3>${esc(event.title)}</h3><p>${fmt(event.starts_at)}</p></div><div class="actions"><button class="secondary participants">${event.genre === "exhibition" ? "出展者・作品管理" : "参加者・支払い"}</button><button class="secondary edit">編集</button><button class="secondary publish">${event.published ? "非公開にする" : "公開する"}</button><button class="danger delete">削除</button></div></article>`,
+        `<article class="admin-row" data-id="${event.id}"><div><span class="tag">${event.status === "draft" ? "下書き" : event.published ? "公開中" : "非公開"}</span><h3>${esc(event.title)}</h3><p>${fmt(event.starts_at)}</p></div><div class="actions"><button class="secondary participants">${event.genre === "exhibition" ? "出展者・作品管理" : "参加者・支払い"}</button>${event.genre === "exhibition" ? '<button class="secondary simulator">展示シミュレータ</button>' : ""}<button class="secondary edit">編集</button><button class="secondary publish">${event.published ? "非公開にする" : "公開する"}</button><button class="danger delete">削除</button></div></article>`,
       ),
     );
     list.querySelectorAll(".admin-row").forEach((row) => {
       const event = events.find((e) => e.id === row.dataset.id);
       row.querySelector(".participants").onclick = () =>
         renderParticipants(event);
+      row.querySelector(".simulator")?.addEventListener("click", () =>
+        renderExhibitionSimulator(event),
+      );
       row.querySelector(".edit").onclick = () => renderEditor(event);
       row.querySelector(".publish").onclick = async () => {
         if (!confirm(`「${event.title}」の公開状態を変更しますか？`)) return;
@@ -1184,6 +1187,237 @@ async function downloadStorageFile(bucket, path, fileName) {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
+async function renderExhibitionSimulator(event, preferredLayoutId = null) {
+  const root = document.querySelector("#participantAdmin");
+  document.querySelector("#editor").classList.add("hidden");
+  root.classList.remove("hidden");
+  root.innerHTML = "<p>展示シミュレータを読み込んでいます…</p>";
+  root.scrollIntoView({ behavior: "smooth" });
+  try {
+    const [venueResult, workResult, layoutResult] = await Promise.all([
+      supabase
+        .from("exhibition_venues")
+        .select("*,exhibition_walls(*)")
+        .order("name"),
+      supabase
+        .from("exhibition_works")
+        .select("*,exhibition_entries!inner(event_id,members(member_no,name))")
+        .eq("exhibition_entries.event_id", event.id)
+        .neq("status", "withdrawn")
+        .order("display_no"),
+      supabase
+        .from("exhibition_layouts")
+        .select("*")
+        .eq("event_id", event.id)
+        .order("updated_at", { ascending: false }),
+    ]);
+    if (venueResult.error) throw venueResult.error;
+    if (workResult.error) throw workResult.error;
+    if (layoutResult.error) throw layoutResult.error;
+    const venues = venueResult.data || [],
+      works = workResult.data || [],
+      layouts = layoutResult.data || [],
+      venue = venues.find((item) => item.id === event.exhibition_venue_id);
+    if (!venue) {
+      root.innerHTML = `<div class="entry-heading"><div><span class="tag">EXHIBITION LAYOUT</span><h2>${esc(event.exhibition_title || event.title)}｜展示シミュレータ</h2></div></div><div class="notice">最初に、この写真展で使用する会場を選択または登録してください。</div><form id="venueSetupForm" class="form-grid simulator-setup"><label class="full">登録済み会場<select name="venue_id"><option value="">新しい会場を登録する</option>${venues.filter((item) => item.status === "active").map((item) => `<option value="${item.id}">${esc(item.name)}</option>`).join("")}</select></label><label>新しい会場名<input name="name" placeholder="例：EAST館 202"></label><label>所在地・建物情報<input name="address"></label><label class="full">会場メモ<textarea name="notes" rows="2"></textarea></label><div class="actions full"><button>この会場を使用する</button></div></form>`;
+      root.querySelector("#venueSetupForm").onsubmit = async (submit) => {
+        submit.preventDefault();
+        const form = submit.currentTarget,
+          values = Object.fromEntries(new FormData(form));
+        try {
+          let venueId = values.venue_id;
+          if (!venueId) {
+            if (!values.name.trim()) throw new Error("会場名を入力してください。");
+            const { data, error } = await supabase
+              .from("exhibition_venues")
+              .insert({
+                name: values.name.trim(),
+                address: values.address.trim(),
+                notes: values.notes.trim(),
+              })
+              .select()
+              .single();
+            if (error) throw error;
+            venueId = data.id;
+          }
+          const { error } = await supabase
+            .from("events")
+            .update({ exhibition_venue_id: venueId })
+            .eq("id", event.id);
+          if (error) throw error;
+          event.exhibition_venue_id = venueId;
+          await renderExhibitionSimulator(event);
+          message("写真展で使用する会場を設定しました。");
+        } catch (error) {
+          failure(error);
+        }
+      };
+      return;
+    }
+
+    const walls = (venue.exhibition_walls || []).sort(
+        (a, b) => a.display_order - b.display_order,
+      ),
+      currentLayout =
+        layouts.find((item) => item.id === preferredLayoutId) ||
+        layouts.find((item) => item.is_current) ||
+        layouts[0] ||
+        null;
+    let placements = [];
+    if (currentLayout) {
+      const { data, error } = await supabase
+        .from("exhibition_placements")
+        .select("*")
+        .eq("layout_id", currentLayout.id)
+        .neq("status", "removed");
+      if (error) throw error;
+      placements = data || [];
+    }
+    const workById = Object.fromEntries(works.map((work) => [work.id, work])),
+      placedIds = new Set(placements.map((placement) => placement.work_id)),
+      unplaced = works.filter((work) => !placedIds.has(work.id));
+    root.innerHTML = `<div class="entry-heading"><div><span class="tag">EXHIBITION LAYOUT</span><h2>${esc(event.exhibition_title || event.title)}｜展示シミュレータ</h2><p class="muted">会場：${esc(venue.name)}／座標はすべてmm。高さは床面から作品上端までです。</p></div></div><section class="simulator-section"><div class="section-head compact"><h3>1. 壁面</h3></div><div class="wall-summary">${walls.length ? walls.map((wall) => `<span>${esc(wall.name)}：${wall.width_mm} × ${wall.height_mm} mm</span>`).join("") : '<span class="muted">壁面が未登録です。</span>'}</div><form id="wallForm" class="form-grid compact-form"><label>壁面名<input name="name" required placeholder="例：正面壁面"></label><label>表示順<input type="number" name="display_order" min="1" required value="${walls.length + 1}"></label><label>幅（mm）<input type="number" name="width_mm" min="1" step="0.01" required></label><label>高さ（mm）<input type="number" name="height_mm" min="1" step="0.01" required></label><label>壁面色<input type="color" name="background_color" value="#FFFFFF"></label><label class="full">注意事項<input name="notes" placeholder="例：右端500mmは配電盤"></label><div class="actions full"><button>壁面を追加</button></div></form></section><section class="simulator-section"><div class="section-head compact"><h3>2. 作品の占有外寸</h3><p>単写真は用紙寸法が初期入力されています。額装・組み写真は実際に壁を占有する外寸へ修正してください。</p></div><div class="dimension-list">${works.length ? works.map((work) => `<form class="dimension-row" data-work-id="${work.id}"><div><strong>${work.display_no ? `No.${esc(work.display_no)}` : `作品${work.sort_order}`} ${esc(work.title || "作品名未入力")}</strong><small>${esc(work.exhibition_entries?.members?.name || "")}／${esc(printSizeLabel(work.print_size, work.print_size_detail))}</small></div><label>幅<input type="number" name="width" min="1" step="0.01" value="${work.occupied_width_mm || ""}" required></label><label>高さ<input type="number" name="height" min="1" step="0.01" value="${work.occupied_height_mm || ""}" required></label><button class="secondary">外寸を保存</button></form>`).join("") : '<p class="muted">出展作品がありません。</p>'}</div></section><section class="simulator-section"><div class="section-head compact"><h3>3. 配置案</h3></div><div class="layout-toolbar"><select id="layoutSelect"><option value="">配置案を選択</option>${layouts.map((layout) => `<option value="${layout.id}" ${layout.id === currentLayout?.id ? "selected" : ""}>${esc(layout.name)} v${layout.version_no}${layout.is_current ? "（現在案）" : ""}</option>`).join("")}</select><form id="layoutForm" class="inline-field"><input name="name" required placeholder="例：第1案"><button>新しい配置案を作成</button></form></div>${currentLayout ? `<div class="layout-status"><strong>${esc(currentLayout.name)} v${currentLayout.version_no}</strong><span>${currentLayout.status === "approved" ? "承認済み" : currentLayout.status === "review" ? "確認中" : currentLayout.status === "archived" ? "保管" : "下書き"}</span></div><div class="unplaced-works"><h4>未配置作品（${unplaced.length}点）</h4>${unplaced.length ? unplaced.map((work) => `<div class="unplaced-work"><span>${work.display_no ? `No.${esc(work.display_no)}` : `作品${work.sort_order}`} ${esc(work.title || "作品名未入力")}</span>${work.occupied_width_mm && walls.length ? `<select data-wall-choice><option value="">配置先の壁面</option>${walls.filter((wall) => wall.usable).map((wall) => `<option value="${wall.id}">${esc(wall.name)}</option>`).join("")}</select><button class="place-work secondary" data-work-id="${work.id}">配置</button>` : '<small class="muted">占有外寸または壁面が未設定です。</small>'}</div>`).join("") : '<p class="muted">すべての作品が配置されています。</p>'}</div><div class="wall-canvases">${walls.map((wall) => renderWallCanvas(wall, placements.filter((item) => item.wall_id === wall.id), workById)).join("")}</div>` : '<div class="notice">配置案を作成すると、作品を壁面へ配置できます。</div>'}</section>`;
+
+    root.querySelector("#wallForm").onsubmit = async (submit) => {
+      submit.preventDefault();
+      const values = Object.fromEntries(new FormData(submit.currentTarget)),
+        { error } = await supabase.from("exhibition_walls").insert({
+          venue_id: venue.id,
+          name: values.name.trim(),
+          display_order: Number(values.display_order),
+          width_mm: Number(values.width_mm),
+          height_mm: Number(values.height_mm),
+          background_color: values.background_color,
+          notes: values.notes.trim(),
+        });
+      if (error) return failure(error);
+      await renderExhibitionSimulator(event, currentLayout?.id);
+      message("壁面を追加しました。");
+    };
+    root.querySelectorAll(".dimension-row").forEach((form) => {
+      form.onsubmit = async (submit) => {
+        submit.preventDefault();
+        const values = Object.fromEntries(new FormData(form)),
+          { error } = await supabase
+            .from("exhibition_works")
+            .update({
+              occupied_width_mm: Number(values.width),
+              occupied_height_mm: Number(values.height),
+            })
+            .eq("id", form.dataset.workId);
+        if (error) return failure(error);
+        await renderExhibitionSimulator(event, currentLayout?.id);
+        message("作品の占有外寸を保存しました。");
+      };
+    });
+    root.querySelector("#layoutSelect").onchange = (change) =>
+      renderExhibitionSimulator(event, change.target.value || null);
+    root.querySelector("#layoutForm").onsubmit = async (submit) => {
+      submit.preventDefault();
+      const name = new FormData(submit.currentTarget).get("name").trim();
+      const { data, error } = await supabase
+        .from("exhibition_layouts")
+        .insert({
+          event_id: event.id,
+          name,
+          version_no: 1,
+          is_current: layouts.length === 0,
+          created_by: session.user.email,
+        })
+        .select()
+        .single();
+      if (error) return failure(error);
+      await renderExhibitionSimulator(event, data.id);
+      message("新しい配置案を作成しました。");
+    };
+    root.querySelectorAll(".place-work").forEach((button) => {
+      button.onclick = async () => {
+        const wallId = button.parentElement.querySelector("select").value,
+          wall = walls.find((item) => item.id === wallId),
+          work = workById[button.dataset.workId];
+        if (!wallId) return failure("配置先の壁面を選択してください。");
+        if (work.occupied_width_mm > wall.width_mm || work.occupied_height_mm > wall.height_mm)
+          return failure("作品の占有外寸が壁面より大きいため配置できません。");
+        const { error } = await supabase.from("exhibition_placements").insert({
+          layout_id: currentLayout.id,
+          work_id: work.id,
+          wall_id: wall.id,
+          x_mm: 0,
+          top_from_floor_mm: Number(wall.height_mm),
+          z_order: placements.length + 1,
+        });
+        if (error) return failure(error);
+        await renderExhibitionSimulator(event, currentLayout.id);
+        message(`作品を「${wall.name}」へ配置しました。`);
+      };
+    });
+    setupPlacementControls(root, event, currentLayout, walls, workById);
+    root.querySelectorAll(".placed-work[data-preview-path]").forEach(
+      async (item) => {
+        const { data, error } = await supabase.storage
+          .from("exhibition-previews")
+          .createSignedUrl(item.dataset.previewPath, 900);
+        if (!error) {
+          item.insertAdjacentHTML(
+            "afterbegin",
+            `<img src="${esc(data.signedUrl)}" alt="">`,
+          );
+        }
+      },
+    );
+  } catch (error) {
+    failure(error);
+  }
+}
+
+function renderWallCanvas(wall, placements, workById) {
+  return `<section class="wall-panel"><div class="wall-panel-head"><h4>${esc(wall.name)}</h4><span>${wall.width_mm} × ${wall.height_mm} mm</span></div><div class="wall-canvas" data-wall-id="${wall.id}" data-wall-width="${wall.width_mm}" data-wall-height="${wall.height_mm}" style="--wall-ratio:${wall.width_mm}/${wall.height_mm};background:${esc(wall.background_color)}">${placements.map((placement) => { const work = workById[placement.work_id]; if (!work) return ""; const left = Number(placement.x_mm) / Number(wall.width_mm) * 100, top = (Number(wall.height_mm) - Number(placement.top_from_floor_mm)) / Number(wall.height_mm) * 100, width = Number(work.occupied_width_mm) / Number(wall.width_mm) * 100, height = Number(work.occupied_height_mm) / Number(wall.height_mm) * 100; return `<button type="button" class="placed-work ${placement.locked ? "is-locked" : ""}" data-placement-id="${placement.id}" ${work.preview_image_path ? `data-preview-path="${esc(work.preview_image_path)}"` : ""} style="left:${left}%;top:${top}%;width:${width}%;height:${height}%;z-index:${placement.z_order}" title="${esc(work.title)}"><strong>${work.display_no ? `No.${esc(work.display_no)}` : `作品${work.sort_order}`}</strong><span>${esc(work.title || "")}</span></button>`; }).join("")}</div><div class="placement-list">${placements.map((placement) => { const work = workById[placement.work_id]; return work ? `<form class="placement-row" data-placement-id="${placement.id}" data-work-id="${work.id}"><strong>${work.display_no ? `No.${esc(work.display_no)}` : `作品${work.sort_order}`} ${esc(work.title || "")}</strong><label>左端 x<input type="number" name="x_mm" min="0" step="1" value="${placement.x_mm}"></label><label>床から上端<input type="number" name="top_from_floor_mm" min="0" step="1" value="${placement.top_from_floor_mm}"></label><label class="lock-label"><input type="checkbox" name="locked" ${placement.locked ? "checked" : ""}>固定</label><button class="secondary save-placement">保存</button><button type="button" class="danger remove-placement">配置解除</button></form>` : ""; }).join("")}</div></section>`;
+}
+
+function setupPlacementControls(root, event, layout, walls, workById) {
+  if (!layout) return;
+  const savePlacement = async (form, quiet = false) => {
+    const work = workById[form.dataset.workId],
+      wall = walls.find((item) => item.id === form.closest(".wall-panel").querySelector(".wall-canvas").dataset.wallId),
+      x = Number(form.elements.x_mm.value),
+      top = Number(form.elements.top_from_floor_mm.value);
+    if (x < 0 || x + Number(work.occupied_width_mm) > Number(wall.width_mm)) throw new Error("作品が壁面の左右端を超えています。");
+    if (top > Number(wall.height_mm) || top - Number(work.occupied_height_mm) < 0) throw new Error("作品が壁面の上下端を超えています。");
+    const { error } = await supabase.from("exhibition_placements").update({ x_mm: x, top_from_floor_mm: top, locked: form.elements.locked.checked }).eq("id", form.dataset.placementId);
+    if (error) throw error;
+    if (!quiet) message("配置座標を保存しました。");
+  };
+  root.querySelectorAll(".placement-row").forEach((form) => {
+    form.onsubmit = async (submit) => { submit.preventDefault(); try { await savePlacement(form); await renderExhibitionSimulator(event, layout.id); } catch (error) { failure(error); } };
+    form.querySelector(".remove-placement").onclick = async () => {
+      if (!confirm("この作品を壁面から外しますか？作品登録自体は削除されません。")) return;
+      const { error } = await supabase.from("exhibition_placements").update({ status: "removed" }).eq("id", form.dataset.placementId);
+      if (error) return failure(error);
+      await renderExhibitionSimulator(event, layout.id);
+      message("作品を配置から外しました。");
+    };
+  });
+  root.querySelectorAll(".placed-work").forEach((item) => {
+    const form = root.querySelector(`.placement-row[data-placement-id="${item.dataset.placementId}"]`);
+    if (!form || form.elements.locked.checked) return;
+    item.onpointerdown = (down) => {
+      down.preventDefault();
+      item.setPointerCapture(down.pointerId);
+      const canvas = item.closest(".wall-canvas"), wallWidth = Number(canvas.dataset.wallWidth), wallHeight = Number(canvas.dataset.wallHeight), startX = down.clientX, startY = down.clientY, initialX = Number(form.elements.x_mm.value), initialTop = Number(form.elements.top_from_floor_mm.value), work = workById[form.dataset.workId];
+      item.onpointermove = (move) => {
+        const x = clamp(initialX + (move.clientX - startX) / canvas.clientWidth * wallWidth, 0, wallWidth - Number(work.occupied_width_mm)), top = clamp(initialTop - (move.clientY - startY) / canvas.clientHeight * wallHeight, Number(work.occupied_height_mm), wallHeight);
+        form.elements.x_mm.value = Math.round(x);
+        form.elements.top_from_floor_mm.value = Math.round(top);
+        item.style.left = `${x / wallWidth * 100}%`;
+        item.style.top = `${(wallHeight - top) / wallHeight * 100}%`;
+      };
+      item.onpointerup = async () => { item.onpointermove = null; try { await savePlacement(form, true); message("ドラッグ後の配置座標を保存しました。"); } catch (error) { failure(error); await renderExhibitionSimulator(event, layout.id); } };
+    };
+  });
 }
 
 const csvCell = (value) =>
