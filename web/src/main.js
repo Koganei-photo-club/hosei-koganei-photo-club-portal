@@ -284,25 +284,38 @@ async function renderPortal(context) {
         `<a class="card" href="#/event/${event.id}"><div><span class="tag">${eventLabel(event)}</span><h3>${esc(event.title)}</h3><p>${fmt(event.starts_at)}・${esc(event.place)}</p>${event.genre === "exhibition" && state ? `<p class="status">${state}</p>` : response ? `<p class="status">${response.cancelled_at ? "キャンセル済み" : `回答済み：${esc(response.attendance)}`}</p>` : ""}</div><strong>→</strong></a>`,
       );
     });
-    await renderArchives();
+    await renderArchives(context.member?.id);
   } catch (error) {
     failure(error);
   }
 }
 
-async function renderArchives() {
+async function renderArchives(memberId) {
+  const root = document.querySelector("#archives");
+  if (!memberId) {
+    root.innerHTML =
+      '<div class="panel muted">部員名簿に登録されると、写真展の履歴を確認できます。</div>';
+    return;
+  }
   const { data: works, error } = await supabase
     .from("archive_works")
     .select("*,archive_exhibitions(*),archive_work_comments(*)")
-    .order("display_no");
+    .eq("owner_member_id", memberId);
   if (error) throw error;
-  const root = document.querySelector("#archives");
   if (!works?.length) {
     root.innerHTML =
       '<div class="panel muted">公開中の作品アーカイブはありません。</div>';
     return;
   }
-  const grouped = works.reduce((result, work) => {
+  works.forEach((work) =>
+    work.archive_work_comments.sort(
+      (a, b) => new Date(a.submitted_at || 0) - new Date(b.submitted_at || 0),
+    ),
+  );
+  const sortedWorks = [...works].sort(
+      (a, b) => Number(a.display_no) - Number(b.display_no),
+    ),
+    grouped = sortedWorks.reduce((result, work) => {
     (result[work.exhibition_id] ??= []).push(work);
     return result;
   }, {});
