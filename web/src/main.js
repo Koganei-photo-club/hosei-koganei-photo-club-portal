@@ -386,6 +386,16 @@ const managedOriginalFileName = (member, work) => {
   const ext = work.original_image_path?.split(".").pop() || "jpg";
   return `${safeStorageFileName(member.name, member.member_no)}_作品${work.sort_order}.${ext}`;
 };
+const publicImageExtension = (file) =>
+  ({ "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" })[
+    file.type
+  ];
+const exhibitionSiteStatusLabel = (status) =>
+  status === "published"
+    ? "写真展サイト公開中"
+    : status === "ended"
+      ? "写真展サイト終了"
+      : "写真展サイト下書き";
 
 async function createWorkPreview(file) {
   if (!["image/jpeg", "image/png"].includes(file.type)) return null;
@@ -1102,7 +1112,7 @@ async function renderAdmin(context) {
     events.forEach((event) =>
       list.insertAdjacentHTML(
         "beforeend",
-        `<article class="admin-row" data-id="${event.id}"><div><span class="tag">${event.status === "draft" ? "下書き" : event.published ? "公開中" : "非公開"}</span><h3>${esc(event.title)}</h3><p>${fmt(event.starts_at)}</p></div><div class="actions"><button class="secondary participants">${event.genre === "exhibition" ? "出展者・作品管理" : "参加者・支払い"}</button>${event.genre === "exhibition" ? '<button class="secondary simulator">展示シミュレータ</button>' : ""}<button class="secondary edit">編集</button><button class="secondary publish">${event.published ? "非公開にする" : "公開する"}</button><button class="danger delete">削除</button></div></article>`,
+        `<article class="admin-row" data-id="${event.id}"><div><span class="tag">${event.status === "draft" ? "下書き" : event.published ? "募集公開中" : "募集非公開"}</span>${event.genre === "exhibition" ? `<span class="tag site-status-tag">${exhibitionSiteStatusLabel(event.site_status)}</span>` : ""}<h3>${esc(event.title)}</h3><p>${fmt(event.starts_at)}</p></div><div class="actions"><button class="secondary participants">${event.genre === "exhibition" ? "出展者・作品管理" : "参加者・支払い"}</button>${event.genre === "exhibition" ? `<button class="secondary simulator">展示シミュレータ</button><button class="secondary exhibition-site">${event.site_status === "published" ? "写真展サイトを終了" : "写真展サイトを公開"}</button>` : ""}<button class="secondary edit">編集</button><button class="secondary publish">${event.published ? "募集を非公開にする" : "募集を公開する"}</button><button class="danger delete">削除</button></div></article>`,
       ),
     );
     list.querySelectorAll(".admin-row").forEach((row) => {
@@ -1112,6 +1122,35 @@ async function renderAdmin(context) {
         renderParticipants(event);
       row.querySelector(".simulator")?.addEventListener("click", () =>
         renderExhibitionSimulator(event),
+      );
+      row.querySelector(".exhibition-site")?.addEventListener(
+        "click",
+        async () => {
+          const ending = event.site_status === "published",
+            prompt = ending
+              ? `「${event.title}」の一般向け写真展サイトを終了しますか？\n終了後も写真展情報は履歴として残りますが、作品一覧は一般公開されません。`
+              : `「${event.title}」の一般向け写真展サイトを公開しますか？\n掲載同意済みの作品画像と、掲載不同意作品の情報が一般公開されます。`;
+          if (!confirm(prompt)) return;
+          const button = row.querySelector(".exhibition-site");
+          button.disabled = true;
+          const { error } = await supabase.rpc(
+            ending
+              ? "admin_end_exhibition_site"
+              : "admin_publish_exhibition_site",
+            { p_event_id: event.id },
+          );
+          if (error) {
+            failure(error);
+            button.disabled = false;
+            return;
+          }
+          await renderAdmin();
+          message(
+            ending
+              ? "写真展サイトの公開を終了しました。"
+              : "写真展サイトを公開しました。",
+          );
+        },
       );
       row.querySelector(".edit").onclick = () => renderEditor(event);
       row.querySelector(".publish").onclick = async () => {
@@ -2174,7 +2213,27 @@ function setupReceiptForm() {
 function renderEditor(event, initialGenre = "meeting") {
   const root = document.querySelector("#editor");
   root.classList.remove("hidden");
-  root.innerHTML = `<h2>${event ? "予定を編集" : "新規予定"}</h2><form id="eventForm" class="form-grid"><label class="full">予定名（必須）<input name="title" value="${esc(event?.title || "")}" required></label><label>ジャンル<select name="genre"><option value="meeting">全体会</option><option value="camp">合宿</option><option value="exhibition">写真展</option></select></label><label id="subtypeField">全体会種別<select name="subtype"><option value="shooting">撮影会</option><option value="dining">お食事会</option></select></label><label>開始日時<input type="datetime-local" name="starts_at"></label><label>終了日時<input type="datetime-local" name="ends_at"></label><label>場所<input name="place" value="${esc(event?.place || "")}"></label><label>企画幹部の連絡先<input name="contact" value="${esc(event?.contact || "")}"></label><label class="full">必要事項<textarea name="details" rows="4">${esc(event?.details || "")}</textarea></label><section id="shootingFields" class="full conditional-fields"><label><input type="checkbox" name="camera_enabled">貸出カメラを受付（上限3台）</label><label><input type="checkbox" name="disposable_enabled">写るんですを受付</label></section><section id="feeFields" class="full conditional-fields"><label><input type="checkbox" name="fee_enabled">費用を表示する</label><div id="feeAmountFields" class="form-grid nested-fields hidden"><label>費用<input type="number" name="fee" min="0"></label><label><input type="checkbox" name="payment_deadline_enabled">支払期限を表示する</label><label id="paymentDeadlineField" class="hidden">支払期限<input type="datetime-local" name="payment_deadline"></label></div></section><section id="exhibitionFields" class="full form-grid conditional-fields"><label>写真展タイトル<input name="exhibition_title"></label><label>出展可能作品数<input type="number" name="max_works" min="1"></label><label>最低シフト人数<input type="number" name="min_shift_people" min="1"></label><label class="full">シフト枠（1行1枠）<textarea name="shift_slots_text" rows="5" placeholder="8月23日 15:00〜17:00"></textarea></label></section><div class="actions full"><button type="button" id="draft" class="secondary">一時保存</button><button type="submit" id="saveEvent">保存</button></div></form>`;
+  root.innerHTML = `<h2>${event ? "予定を編集" : "新規予定"}</h2><form id="eventForm" class="form-grid">
+    <label class="full">予定名（必須）<input name="title" value="${esc(event?.title || "")}" required></label>
+    <label>ジャンル<select name="genre"><option value="meeting">全体会</option><option value="camp">合宿</option><option value="exhibition">写真展</option></select></label>
+    <label id="subtypeField">全体会種別<select name="subtype"><option value="shooting">撮影会</option><option value="dining">お食事会</option></select></label>
+    <label>開始日時<input type="datetime-local" name="starts_at"></label><label>終了日時<input type="datetime-local" name="ends_at"></label>
+    <label>場所<input name="place" value="${esc(event?.place || "")}"></label><label>企画幹部の連絡先<input name="contact" value="${esc(event?.contact || "")}"></label>
+    <label class="full">必要事項<textarea name="details" rows="4">${esc(event?.details || "")}</textarea></label>
+    <section id="shootingFields" class="full conditional-fields"><label><input type="checkbox" name="camera_enabled">貸出カメラを受付（上限3台）</label><label><input type="checkbox" name="disposable_enabled">写るんですを受付</label></section>
+    <section id="feeFields" class="full conditional-fields"><label><input type="checkbox" name="fee_enabled">費用を表示する</label><div id="feeAmountFields" class="form-grid nested-fields hidden"><label>費用<input type="number" name="fee" min="0"></label><label><input type="checkbox" name="payment_deadline_enabled">支払期限を表示する</label><label id="paymentDeadlineField" class="hidden">支払期限<input type="datetime-local" name="payment_deadline"></label></div></section>
+    <section id="exhibitionFields" class="full form-grid conditional-fields">
+      <label>写真展タイトル<input name="exhibition_title"></label><label>出展可能作品数<input type="number" name="max_works" min="1"></label>
+      <label>最低シフト人数<input type="number" name="min_shift_people" min="1"></label><label class="full">シフト枠（1行1枠）<textarea name="shift_slots_text" rows="5" placeholder="8月23日 15:00〜17:00"></textarea></label>
+      <fieldset class="full public-site-fields"><legend>一般向け写真展サイト</legend><p class="muted">ここで保存した内容は「写真展サイトを公開」を押すまで一般公開されません。保存し直すと安全のためサイトは下書きへ戻ります。</p><div class="form-grid">
+        <label>写真展キー<input name="exhibition_key" maxlength="100" placeholder="例：2026-winter"><small>半角数字・小文字・ハイフン。公開URLの識別子になります。</small></label><label>サイト用タイトル<input name="site_title" maxlength="200"></label>
+        <label class="full">キャッチコピー（任意）<input name="site_catchphrase" maxlength="300"></label><label class="full">紹介文<textarea name="site_description" maxlength="5000" rows="6"></textarea></label>
+        <label>アンケート受付開始（任意）<input type="datetime-local" name="survey_opens_at"></label><label>アンケート受付終了（任意）<input type="datetime-local" name="survey_closes_at"></label>
+        <label class="full">DM画像（JPEG・PNG・WebP、10MBまで）<input type="file" name="dm_image" accept="image/jpeg,image/png,image/webp"><small id="registeredDmImage"></small></label>
+      </div></fieldset>
+    </section>
+    <div class="actions full"><button type="button" id="draft" class="secondary">一時保存</button><button type="submit" id="saveEvent">保存</button></div>
+  </form>`;
   const form = document.querySelector("#eventForm"),
     local = (value) =>
       value
@@ -2190,8 +2249,14 @@ function renderEditor(event, initialGenre = "meeting") {
   form.starts_at.value = local(event?.starts_at);
   form.ends_at.value = local(event?.ends_at);
   form.payment_deadline.value = local(event?.payment_deadline);
+  form.survey_opens_at.value = local(event?.survey_opens_at);
+  form.survey_closes_at.value = local(event?.survey_closes_at);
   for (const name of [
     "exhibition_title",
+    "exhibition_key",
+    "site_title",
+    "site_catchphrase",
+    "site_description",
     "fee",
     "max_works",
     "min_shift_people",
@@ -2206,6 +2271,9 @@ function renderEditor(event, initialGenre = "meeting") {
   form.shift_slots_text.value = (event?.shift_slots || [])
     .map((slot) => (typeof slot === "string" ? slot : slot.label))
     .join("\n");
+  document.querySelector("#registeredDmImage").textContent = event?.dm_image_path
+    ? `登録済み：${event.dm_image_path.split("/").pop()}`
+    : "未登録";
   const existingSlots = event?.shift_slots || [],
     conditions = () => {
       const genre = form.genre.value,
@@ -2234,7 +2302,11 @@ function renderEditor(event, initialGenre = "meeting") {
         .querySelector("#exhibitionFields")
         .classList.toggle("hidden", genre !== "exhibition");
     };
-  const snapshot = () => JSON.stringify(Object.fromEntries(new FormData(form))),
+  const snapshot = () =>
+      JSON.stringify({
+        ...Object.fromEntries(new FormData(form)),
+        dm_image: form.dm_image.files[0]?.name || "",
+      }),
     initial = { value: "" },
     updateButtons = () => {
       const unchanged = snapshot() === initial.value;
@@ -2253,6 +2325,36 @@ function renderEditor(event, initialGenre = "meeting") {
     try {
       const values = Object.fromEntries(new FormData(form));
       if (!values.title.trim()) throw new Error("予定名は必須です。");
+      const dmFile = form.dm_image.files[0],
+        exhibitionKey = values.exhibition_key.trim();
+      if (
+        values.genre === "exhibition" &&
+        exhibitionKey &&
+        !/^[0-9]{4}-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(exhibitionKey)
+      )
+        throw new Error(
+          "写真展キーは、2026-winter のように半角数字・小文字・ハイフンで入力してください。",
+        );
+      if (dmFile && !exhibitionKey)
+        throw new Error("DM画像を登録する場合は写真展キーが必要です。");
+      if (
+        values.genre === "exhibition" &&
+        event?.exhibition_key &&
+        event.exhibition_key !== exhibitionKey &&
+        event.dm_image_path &&
+        !dmFile
+      )
+        throw new Error(
+          "写真展キーを変更する場合は、DM画像も選択し直してください。",
+        );
+      if (dmFile && (!publicImageExtension(dmFile) || dmFile.size > 10 * 1024 * 1024))
+        throw new Error("DM画像はJPEG・PNG・WebPのいずれか、10MB以下にしてください。");
+      if (
+        values.survey_opens_at &&
+        values.survey_closes_at &&
+        values.survey_closes_at <= values.survey_opens_at
+      )
+        throw new Error("アンケート受付終了は受付開始より後にしてください。");
       if (!draft) {
         if (!values.starts_at || !values.place.trim() || !values.contact.trim())
           throw new Error("保存には日時、場所、企画幹部の連絡先が必要です。");
@@ -2308,6 +2410,20 @@ function renderEditor(event, initialGenre = "meeting") {
             : null,
           exhibition_title:
             values.genre === "exhibition" ? values.exhibition_title.trim() : "",
+          exhibition_key:
+            values.genre === "exhibition" ? exhibitionKey || null : null,
+          site_title:
+            values.genre === "exhibition" ? values.site_title.trim() : "",
+          site_catchphrase:
+            values.genre === "exhibition" ? values.site_catchphrase.trim() : "",
+          site_description:
+            values.genre === "exhibition" ? values.site_description.trim() : "",
+          survey_opens_at:
+            values.genre === "exhibition" ? asIso(values.survey_opens_at) : null,
+          survey_closes_at:
+            values.genre === "exhibition" ? asIso(values.survey_closes_at) : null,
+          site_status:
+            values.genre === "exhibition" ? "draft" : event?.site_status || "draft",
           max_works:
             values.genre === "exhibition" ? Number(values.max_works || 0) : 0,
           min_shift_people:
@@ -2332,8 +2448,24 @@ function renderEditor(event, initialGenre = "meeting") {
       const query = event
         ? supabase.from("events").update(payload).eq("id", event.id)
         : supabase.from("events").insert(payload);
-      const { error } = await query;
+      const { data: savedEvent, error } = await query.select("id").single();
       if (error) throw error;
+      if (dmFile) {
+        const dmPath = `${exhibitionKey}/dm.${publicImageExtension(dmFile)}`,
+          { error: uploadError } = await supabase.storage
+            .from("exhibition-public")
+            .upload(dmPath, dmFile, {
+              upsert: true,
+              contentType: dmFile.type,
+              cacheControl: "3600",
+            });
+        if (uploadError) throw uploadError;
+        const { error: pathError } = await supabase
+          .from("events")
+          .update({ dm_image_path: dmPath })
+          .eq("id", savedEvent.id);
+        if (pathError) throw pathError;
+      }
       adminGenreTab = values.genre;
       await renderAdmin();
       message(draft ? "下書きを保存しました。" : "予定を保存しました。");
