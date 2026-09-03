@@ -436,6 +436,51 @@ async function createWorkPreview(file) {
   }
 }
 
+async function createWatermarkedPublicImage(previewPath) {
+  const { data, error } = await supabase.storage
+    .from("exhibition-previews")
+    .createSignedUrl(previewPath, 300);
+  if (error) throw error;
+  const [imageResponse, logoResponse] = await Promise.all([
+    fetch(data.signedUrl),
+    fetch(`${location.origin}/photo-exhibition-site/images/photoiconclubs.png`),
+  ]);
+  if (!imageResponse.ok || !logoResponse.ok)
+    throw new Error("作品画像または透かしロゴを読み込めませんでした。");
+  const source = await createImageBitmap(await imageResponse.blob()),
+    logo = await createImageBitmap(await logoResponse.blob()),
+    scale = Math.min(1, 2400 / Math.max(source.width, source.height)),
+    canvas = document.createElement("canvas"),
+    context = canvas.getContext("2d");
+  canvas.width = Math.max(1, Math.round(source.width * scale));
+  canvas.height = Math.max(1, Math.round(source.height * scale));
+  context.drawImage(source, 0, 0, canvas.width, canvas.height);
+  const shortEdge = Math.min(canvas.width, canvas.height),
+    logoSize = Math.max(56, Math.round(shortEdge * 0.21)),
+    step = Math.max(120, Math.round(shortEdge * 0.34));
+  context.globalAlpha = 0.08;
+  for (let y = -step; y < canvas.height + step; y += step) {
+    for (let x = -step; x < canvas.width + step; x += step) {
+      context.save();
+      context.translate(x + step / 2, y + step / 2);
+      context.rotate((-25 * Math.PI) / 180);
+      context.drawImage(logo, -logoSize / 2, -logoSize / 2, logoSize, logoSize);
+      context.restore();
+    }
+  }
+  context.globalAlpha = 1;
+  source.close?.();
+  logo.close?.();
+  const blob = await new Promise((resolve, reject) =>
+    canvas.toBlob(
+      (value) => value ? resolve(value) : reject(new Error("公開用画像を生成できませんでした。")),
+      "image/webp",
+      0.88,
+    ),
+  );
+  return blob;
+}
+
 async function renderExhibitionEvent(event, context) {
   layout(
     "写真展出展申込",
@@ -1957,6 +2002,10 @@ async function renderExhibitionParticipants(event) {
       "beforebegin",
       `<fieldset class="work-translation-fields"><legend>English（任意）</legend><label>Title<input class="title-en" maxlength="500" value="${esc(work.title_en || "")}" placeholder="空欄の場合は日本語作品名を表示"></label><label>Description<textarea class="description-en" maxlength="3000" rows="3" placeholder="空欄の場合は日本語Descriptionを表示">${esc(work.description_en || "")}</textarea></label></fieldset>`,
     );
+    card.querySelector(".work-admin-controls").insertAdjacentHTML(
+      "beforebegin",
+      `<div class="public-image-controls"><span>${work.public_release && work.public_image_path ? "透かし入り公開画像：生成済み" : work.publication_consent === false ? "掲載不同意：NO IMAGEで公開" : "透かし入り公開画像：未生成"}</span><button type="button" class="secondary generate-public-image" ${work.publication_consent === true && work.preview_image_path ? "" : "disabled"}>${work.public_release ? "公開画像を再生成" : "公開画像を生成"}</button></div>`,
+    );
   });
   root.querySelector("#exportExhibitionManifest").onclick = () => {
     const headers = [
@@ -2077,6 +2126,51 @@ async function renderExhibitionParticipants(event) {
       return;
     }
     target.innerHTML = `<img src="${esc(data.signedUrl)}" alt="${esc(target.dataset.alt)}">`;
+  });
+  root.querySelectorAll(".generate-public-image").forEach((button) => {
+    button.onclick = async () => {
+      const card = button.closest(".admin-work-card"),
+        item = visibleWorks.find(({ work }) => work.id === card.dataset.workId),
+        work = item?.work;
+      if (!work?.preview_image_path || work.publication_consent !== true) return;
+      if (
+        !confirm(
+          `「${work.title || `作品${work.sort_order}`}」のプレビューから、写真部ロゴ入り公開画像を生成しますか？`,
+        )
+      )
+        return;
+      button.disabled = true;
+      try {
+        const blob = await createWatermarkedPublicImage(work.preview_image_path),
+          path = `${event.id}/${work.owner_member_id}/${work.id}/public.webp`,
+          { error: uploadError } = await supabase.storage
+            .from("exhibition-public")
+            .upload(path, blob, {
+              upsert: true,
+              contentType: "image/webp",
+              cacheControl: "3600",
+            });
+        if (uploadError) throw uploadError;
+        const { error: workError } = await supabase
+          .from("exhibition_works")
+          .update({ public_image_path: path, public_release: true })
+          .eq("id", work.id);
+        if (workError) throw workError;
+        if (event.site_status !== "draft") {
+          const { error: draftError } = await supabase
+            .from("events")
+            .update({ site_status: "draft", updated_at: new Date().toISOString() })
+            .eq("id", event.id);
+          if (draftError) throw draftError;
+          event.site_status = "draft";
+        }
+        await renderExhibitionParticipants(event);
+        message("透かし入り公開画像を生成しました。写真展サイトは下書き状態です。");
+      } catch (imageError) {
+        failure(imageError);
+        button.disabled = false;
+      }
+    };
   });
   root.querySelectorAll(".download-qr").forEach(
     (button) =>
