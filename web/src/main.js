@@ -1438,7 +1438,57 @@ async function renderParticipants(event) {
     unpaid = responses.filter(
       (response) => response.payment_status === "unpaid",
     ).length;
-  root.innerHTML = `<span class="tag">PARTICIPANTS</span><h2>${esc(event.title)}｜参加者・支払い管理</h2><div class="summary-strip"><span>回答 ${responses.length}名</span><span>参加 ${joined}名</span>${event.fee_enabled && event.fee > 0 ? `<span>支払い済み ${paid}名</span><span>未払い ${unpaid}名</span>` : ""}</div><div id="participantList" class="participant-list"></div>`;
+  root.innerHTML = `<div class="entry-heading"><div><span class="tag">PARTICIPANTS</span><h2>${esc(event.title)}｜参加者・支払い管理</h2></div><div class="actions admin-work-actions"><button id="exportParticipants" class="secondary" ${responses.length ? "" : "disabled"}>参加者CSVを出力</button></div></div><div class="summary-strip"><span>回答 ${responses.length}名</span><span>参加 ${joined}名</span>${event.fee_enabled && event.fee > 0 ? `<span>支払い済み ${paid}名</span><span>未払い ${unpaid}名</span>` : ""}</div><div id="participantList" class="participant-list"></div>`;
+  root.querySelector("#exportParticipants").onclick = () => {
+    const headers = [
+        "MemberId",
+        "氏名",
+        "学年",
+        "学部",
+        "学科",
+        "研究科",
+        "専攻",
+        "LINE名",
+        "出欠",
+        "貸出カメラ",
+        "写るんです",
+        "アレルギー",
+        "アレルギー詳細",
+        "備考",
+        "支払い状況",
+        "回答日時",
+        "キャンセル日時",
+        "キャンセル理由",
+      ],
+      rows = responses.map((response) => {
+        const member = response.members || {};
+        return [
+          member.member_no,
+          member.name,
+          member.grade,
+          member.faculty,
+          member.department,
+          member.graduate_school,
+          member.major,
+          response.line_name,
+          response.cancelled_at ? "キャンセル済み" : response.attendance,
+          response.camera ? "希望する" : "",
+          response.disposable_camera ? "希望する" : "",
+          response.allergies,
+          response.other_allergy,
+          response.note,
+          paymentLabel(response.payment_status),
+          response.submitted_at,
+          response.cancelled_at,
+          response.payment_updated_by === "system:payment-deadline"
+            ? "支払期限超過による自動キャンセル"
+            : "",
+        ];
+      }),
+      eventName = safeStorageFileName(event.title, "event");
+    downloadCsv(`${eventName}_参加者一覧.csv`, headers, rows);
+    message("メールアドレスを含まない参加者CSVを出力しました。");
+  };
   const list = root.querySelector("#participantList");
   if (!responses.length) {
     list.innerHTML = '<p class="muted">回答はまだありません。</p>';
