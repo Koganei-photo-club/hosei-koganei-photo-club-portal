@@ -1186,6 +1186,25 @@ async function downloadStorageFile(bucket, path, fileName) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+const csvCell = (value) =>
+  `"${String(value ?? "").replaceAll('"', '""')}"`;
+
+function downloadCsv(fileName, headers, rows) {
+  const csv = [headers, ...rows]
+    .map((row) => row.map(csvCell).join(","))
+    .join("\r\n");
+  const url = URL.createObjectURL(
+      new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }),
+    ),
+    link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 async function renderExhibitionParticipants(event) {
   const root = document.querySelector("#participantAdmin");
   document.querySelector("#editor").classList.add("hidden");
@@ -1210,7 +1229,7 @@ async function renderExhibitionParticipants(event) {
         .map((work) => ({ entry, work })),
     ),
     submitted = entries.filter((entry) => entry.status === "submitted").length;
-  root.innerHTML = `<div class="entry-heading"><div><span class="tag">EXHIBITORS & WORKS</span><h2>${esc(event.exhibition_title || event.title)}｜出展者・作品管理</h2></div><div class="actions admin-work-actions"><button id="assignDisplayNumbers" class="secondary" ${visibleWorks.some((item) => !item.work.display_no) ? "" : "disabled"}>未採番作品へ連番を付与</button><button id="copyExhibitionCaptions" class="secondary" ${visibleWorks.length ? "" : "disabled"}>タイトル・キャプションを一括コピー</button></div></div><div class="summary-strip"><span>申込 ${entries.length}名</span><span>確定 ${submitted}名</span><span>作品 ${visibleWorks.length}点</span><span>未採番 ${visibleWorks.filter((item) => !item.work.display_no).length}点</span><span>確認済み ${visibleWorks.filter((item) => item.work.status === "accepted").length}点</span><span>要修正 ${visibleWorks.filter((item) => item.work.status === "rejected").length}点</span><span>QR登録 ${visibleWorks.filter((item) => item.work.instagram_qr_path).length}点</span></div><div id="exhibitorList" class="exhibitor-list"></div>`;
+  root.innerHTML = `<div class="entry-heading"><div><span class="tag">EXHIBITORS & WORKS</span><h2>${esc(event.exhibition_title || event.title)}｜出展者・作品管理</h2></div><div class="actions admin-work-actions"><button id="assignDisplayNumbers" class="secondary" ${visibleWorks.some((item) => !item.work.display_no) ? "" : "disabled"}>未採番作品へ連番を付与</button><button id="exportExhibitionManifest" class="secondary" ${visibleWorks.length ? "" : "disabled"}>連携用CSVを出力</button><button id="copyExhibitionCaptions" class="secondary" ${visibleWorks.length ? "" : "disabled"}>タイトル・キャプションを一括コピー</button></div></div><div class="summary-strip"><span>申込 ${entries.length}名</span><span>確定 ${submitted}名</span><span>作品 ${visibleWorks.length}点</span><span>未採番 ${visibleWorks.filter((item) => !item.work.display_no).length}点</span><span>確認済み ${visibleWorks.filter((item) => item.work.status === "accepted").length}点</span><span>要修正 ${visibleWorks.filter((item) => item.work.status === "rejected").length}点</span><span>QR登録 ${visibleWorks.filter((item) => item.work.instagram_qr_path).length}点</span></div><div id="exhibitorList" class="exhibitor-list"></div>`;
   const list = root.querySelector("#exhibitorList");
   if (!entries.length) {
     list.innerHTML = '<p class="muted">出展申込はまだありません。</p>';
@@ -1233,6 +1252,57 @@ async function renderExhibitionParticipants(event) {
       `<article class="exhibitor-card"><div class="exhibitor-head"><div><span class="tag">${entry.status === "submitted" ? "申込済み" : entry.status === "withdrawn" ? "取り下げ" : "下書き"}</span><h3>${esc(member.name || "部員情報なし")}</h3><p>${esc(member.member_no || "")} ${esc(affiliation)}</p></div><span class="status">${works.length}作品</span></div>${entry.note ? `<p class="muted">出展備考：${esc(entry.note)}</p>` : ""}<div class="admin-work-list">${works.length ? works.map((work) => `<section class="admin-work-card" data-work-id="${work.id}"><div class="admin-work-image">${work.preview_image_path ? `<span class="storage-image" data-storage-path="${esc(work.preview_image_path)}" data-alt="${esc(work.title || "作品プレビュー")}">プレビュー読込中…</span>` : '<span class="muted">プレビューなし</span>'}${work.original_image_path ? `<button type="button" class="secondary download-original" data-original-path="${esc(work.original_image_path)}" data-file-name="${esc(managedOriginalFileName(member, work))}">原画像をダウンロード</button>` : ""}</div><div class="admin-work-copy"><div class="work-meta"><span class="tag">${work.display_no ? `No.${esc(work.display_no)}` : `WORK ${work.sort_order}`}</span><span>${esc(exhibitionWorkStatus(work.status))}</span></div><h3>${esc(work.title || "作品名未入力")}</h3><dl class="caption-details"><dt>向き</dt><dd>${esc(orientationLabel(work.orientation))}</dd><dt>出展サイズ</dt><dd>${esc(printSizeLabel(work.print_size, work.print_size_detail))}</dd><dt>作者</dt><dd>${work.artist_name ? esc(work.artist_name) : '<span class="muted">未入力</span>'}</dd><dt>Camera</dt><dd>${work.camera_name ? esc(work.camera_name) : '<span class="muted">未入力</span>'}</dd><dt>Lens, other</dt><dd>${work.lens_other ? esc(work.lens_other) : '<span class="muted">未入力</span>'}</dd><dt>Description</dt><dd class="caption-text">${work.description ? esc(work.description) : '<span class="muted">未入力</span>'}</dd></dl><p class="muted">アップロード元：${esc(work.original_file_name || "不明")}</p><p class="muted">管理ファイル名：${esc(managedOriginalFileName(member, work))}</p>${work.note ? `<p class="muted">作品備考：${esc(work.note)}</p>` : ""}<div class="work-admin-controls"><label>作品番号<input class="display-no" value="${esc(work.display_no || "")}" placeholder="例：01"></label><label>確認状態<select class="review-status"><option value="submitted" ${work.status === "submitted" || work.status === "draft" ? "selected" : ""}>提出済み</option><option value="accepted" ${work.status === "accepted" ? "selected" : ""}>確認済み</option><option value="rejected" ${work.status === "rejected" ? "selected" : ""}>要修正</option></select></label><button type="button" class="update-work">作品情報を更新</button></div></div><div class="admin-work-qr"><strong>Instagram QR</strong>${work.instagram_qr_path ? `<span class="storage-image qr-image" data-storage-path="${esc(work.instagram_qr_path)}" data-alt="${esc(`${work.title || "作品"}のInstagram QRコード`)}">QR読込中…</span><small>${esc(work.instagram_qr_file_name || "登録済み")}</small><button type="button" class="secondary download-qr" data-qr-path="${esc(work.instagram_qr_path)}" data-file-name="${esc(work.instagram_qr_file_name || "instagram-qr")}">QR画像をダウンロード</button>` : '<span class="muted">未登録</span>'}</div></section>`).join("") : '<p class="muted">作品はまだ登録されていません。</p>'}</div></article>`,
     );
   });
+  root.querySelector("#exportExhibitionManifest").onclick = () => {
+    const headers = [
+        "WorkUuid",
+        "ExhibitionEventId",
+        "DisplayNo",
+        "SubmissionSlot",
+        "MemberId",
+        "MemberName",
+        "Title",
+        "Artist",
+        "Camera",
+        "LensOther",
+        "Description",
+        "Orientation",
+        "PrintSize",
+        "PrintSizeDetail",
+        "OriginalFileName",
+        "OriginalStoragePath",
+        "InstagramQrPath",
+        "Status",
+      ],
+      rows = visibleWorks.map(({ entry, work }) => {
+        const member = entry.members || {};
+        return [
+          work.id,
+          event.id,
+          work.display_no,
+          work.sort_order,
+          member.member_no,
+          member.name,
+          work.title,
+          work.artist_name,
+          work.camera_name,
+          work.lens_other,
+          work.description,
+          work.orientation,
+          work.print_size,
+          work.print_size_detail,
+          managedOriginalFileName(member, work),
+          work.original_image_path,
+          work.instagram_qr_path,
+          work.status,
+        ];
+      }),
+      eventName = safeStorageFileName(
+        event.exhibition_title || event.title,
+        "exhibition",
+      );
+    downloadCsv(`${eventName}_作品連携.csv`, headers, rows);
+    message("写真展サイト・展示管理アプリ向けの連携用CSVを出力しました。");
+  };
   root.querySelector("#copyExhibitionCaptions").onclick = async () => {
     const text = visibleWorks
       .map(({ entry, work }, index) => {
