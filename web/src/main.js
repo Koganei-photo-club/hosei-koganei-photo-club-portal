@@ -237,7 +237,7 @@ async function renderPortal(context) {
       const { data: entries, error: entryError } = await supabase
         .from("exhibition_entries")
         .select(
-          "event_id,status,exhibition_works(status,orientation,print_size)",
+          "event_id,status,exhibition_works(status,orientation,print_size,publication_consent)",
         )
         .eq("member_id", context.member.id);
       if (entryError) throw entryError;
@@ -263,7 +263,10 @@ async function renderPortal(context) {
         ),
         state = entryWorks.some(
           (work) =>
-            work.status === "rejected" || !work.orientation || !work.print_size,
+            work.status === "rejected" ||
+            !work.orientation ||
+            !work.print_size ||
+            work.publication_consent === null,
         )
           ? "要修正の作品があります"
           : entryWorks.length &&
@@ -418,13 +421,19 @@ async function renderExhibitionEvent(event, context) {
       works = allWorks.filter((work) => work.status !== "withdrawn"),
       hasRejected = works.some(
         (work) =>
-          work.status === "rejected" || !work.orientation || !work.print_size,
+          work.status === "rejected" ||
+          !work.orientation ||
+          !work.print_size ||
+          work.publication_consent === null,
       ),
       allAccepted =
         works.length > 0 &&
         works.every(
           (work) =>
-            work.status === "accepted" && work.orientation && work.print_size,
+            work.status === "accepted" &&
+            work.orientation &&
+            work.print_size &&
+            work.publication_consent !== null,
         ),
       entryState = hasRejected
         ? "要修正"
@@ -458,7 +467,10 @@ async function renderExhibitionEvent(event, context) {
             (number) => !usedSlots.has(number),
           );
       const locked =
-          work?.status === "accepted" && work?.orientation && work?.print_size,
+          work?.status === "accepted" &&
+          work?.orientation &&
+          work?.print_size &&
+          work?.publication_consent !== null,
         storedFileName =
           work?.original_file_name ||
           work?.original_image_path?.split("/").pop() ||
@@ -480,6 +492,10 @@ async function renderExhibitionEvent(event, context) {
         `<article class="work-editor" data-id="${esc(work?.id || "")}" data-sort-order="${work?.sort_order || ""}" data-original-path="${esc(work?.original_image_path || "")}" data-original-file-name="${esc(storedFileName)}" data-preview-path="${esc(work?.preview_image_path || "")}" data-qr-path="${esc(work?.instagram_qr_path || "")}" data-qr-file-name="${esc(storedQrName)}" data-locked="${locked}"><div class="work-editor-head"><div><span class="tag">WORK ${activeCount + 1}</span><h3>${work ? esc(exhibitionWorkStatus(work.status)) : "新しい作品"}</h3></div><button type="button" class="danger remove-work" ${locked ? "disabled" : ""}>${work && work.status !== "draft" ? "取り下げ" : "削除"}</button></div><div class="form-grid"><label>作品名（提出時必須）<input name="title" value="${esc(work?.title || "")}" ${locked ? "disabled" : ""}></label><label>原画像${work?.original_image_path ? "（登録済み）" : "（提出時必須）"}${fileControl}</label><fieldset class="full print-fields"><legend>展示仕様</legend><p class="muted">原則としてA4以上での出展をお願いします。組み写真ではL判・2L判も選択できます。</p><div class="form-grid"><label>作品の向き（必須）<select name="orientation" ${locked ? "disabled" : ""}><option value="">選択してください</option><option value="portrait" ${work?.orientation === "portrait" ? "selected" : ""}>縦</option><option value="landscape" ${work?.orientation === "landscape" ? "selected" : ""}>横</option></select></label><label>出展サイズ（必須）<select name="print_size" ${locked ? "disabled" : ""}><option value="">選択してください</option><option value="A4" ${work?.print_size === "A4" ? "selected" : ""}>A4</option><option value="A3" ${work?.print_size === "A3" ? "selected" : ""}>A3</option><option value="A2" ${work?.print_size === "A2" ? "selected" : ""}>A2</option><option value="composite" ${work?.print_size === "composite" ? "selected" : ""}>組み写真</option><option value="other" ${work?.print_size === "other" ? "selected" : ""}>その他</option></select></label><label class="full print-size-detail ${["composite", "other"].includes(work?.print_size) ? "" : "hidden"}">サイズ詳細（組み写真・その他は必須）<input name="print_size_detail" maxlength="500" value="${esc(work?.print_size_detail || "")}" placeholder="例：2L判を4枚" ${locked ? "disabled" : ""}></label></div></fieldset><fieldset class="full caption-fields"><legend>キャプション</legend><div class="form-grid"><label>作者名・ペンネーム（必須）<input name="artist_name" maxlength="100" value="${esc(work?.artist_name || "")}" ${locked ? "disabled" : ""}></label><label>Camera（必須）<input name="camera_name" maxlength="200" value="${esc(work?.camera_name || "")}" ${locked ? "disabled" : ""}></label><label class="full">Lens, other（任意）<input name="lens_other" maxlength="500" value="${esc(work?.lens_other || "")}" placeholder="レンズ名、フィルム名など" ${locked ? "disabled" : ""}></label><label class="full">Description（任意）<textarea name="description" maxlength="3000" rows="3" ${locked ? "disabled" : ""}>${esc(work?.description || work?.caption || "")}</textarea></label></div></fieldset><label class="full">Instagram QRコード（任意）${qrControl}</label><label class="full">作品に関する備考<textarea name="note" rows="2" ${locked ? "disabled" : ""}>${esc(work?.note || "")}</textarea></label></div>${work?.preview_image_path ? '<div class="work-preview"><span class="muted">登録済みプレビューを読み込んでいます…</span></div>' : work?.original_image_path ? '<p class="muted">原画像登録済み（この形式のプレビューはブラウザでは生成されません）</p>' : ""}</article>`,
       );
       const editor = editors.lastElementChild;
+      editor.querySelector(".caption-fields").insertAdjacentHTML(
+        "beforebegin",
+        `<fieldset class="full publication-fields"><legend>写真展サイトへの掲載（必須）</legend><p class="muted">同意した作品は、透かし入りの縮小画像として写真展サイトに掲載され、開催終了後も履歴ページに残る場合があります。不同意の場合は作品画像の代わりに「NO IMAGE」のロゴ画像を表示します。</p><label><input type="radio" name="publication_consent" value="consent" ${work?.publication_consent === true ? "checked" : ""} ${locked ? "disabled" : ""}>上記を確認し、掲載に同意する</label><label><input type="radio" name="publication_consent" value="decline" ${work?.publication_consent === false ? "checked" : ""} ${locked ? "disabled" : ""}>掲載に同意しない</label></fieldset>`,
+      );
       editor.dataset.sortOrder = String(slot);
       editor.querySelector(".tag").textContent = `作品 ${slot}`;
       editor.querySelector(".remove-work").textContent = "削除";
@@ -629,6 +645,9 @@ async function renderExhibitionEvent(event, context) {
               printSize: editor.querySelector("[name=print_size]").value,
               printSizeDetail: editor.querySelector("[name=print_size_detail]")
                 .value,
+              publicationConsent:
+                editor.querySelector("[name=publication_consent]:checked")
+                  ?.value || "",
               artistName: editor.querySelector("[name=artist_name]").value,
               cameraName: editor.querySelector("[name=camera_name]").value,
               lensOther: editor.querySelector("[name=lens_other]").value,
@@ -686,6 +705,9 @@ async function renderExhibitionEvent(event, context) {
             cameraName = editor
               .querySelector("[name=camera_name]")
               .value.trim(),
+            publicationConsent = editor.querySelector(
+              "[name=publication_consent]:checked",
+            )?.value,
             file = editor.querySelector("[name=original]").files[0],
             qrFile = editor.querySelector("[name=instagram_qr]").files[0],
             hasOriginal = Boolean(editor.dataset.originalPath);
@@ -707,6 +729,10 @@ async function renderExhibitionEvent(event, context) {
             );
           if (submitted && !cameraName)
             throw new Error(`作品${index + 1}のCameraを入力してください。`);
+          if (submitted && !publicationConsent)
+            throw new Error(
+              `作品${index + 1}の写真展サイトへの掲載可否を選択してください。`,
+            );
           if (submitted && !file && !hasOriginal)
             throw new Error(`作品${index + 1}の原画像を選択してください。`);
           if (file && file.size > 52428800)
@@ -857,6 +883,14 @@ async function renderExhibitionEvent(event, context) {
             print_size_detail: editor
               .querySelector("[name=print_size_detail]")
               .value.trim(),
+            publication_consent:
+              editor.querySelector("[name=publication_consent]:checked")
+                ?.value === "consent"
+                ? true
+                : editor.querySelector("[name=publication_consent]:checked")
+                      ?.value === "decline"
+                  ? false
+                  : null,
             artist_name: editor
               .querySelector("[name=artist_name]")
               .value.trim(),
@@ -1700,6 +1734,28 @@ async function renderExhibitionParticipants(event) {
       `<article class="exhibitor-card"><div class="exhibitor-head"><div><span class="tag">${entry.status === "submitted" ? "申込済み" : entry.status === "withdrawn" ? "取り下げ" : "下書き"}</span><h3>${esc(member.name || "部員情報なし")}</h3><p>${esc(member.member_no || "")} ${esc(affiliation)}</p></div><span class="status">${works.length}作品</span></div>${entry.note ? `<p class="muted">出展備考：${esc(entry.note)}</p>` : ""}<div class="admin-work-list">${works.length ? works.map((work) => `<section class="admin-work-card" data-work-id="${work.id}"><div class="admin-work-image">${work.preview_image_path ? `<span class="storage-image" data-storage-path="${esc(work.preview_image_path)}" data-alt="${esc(work.title || "作品プレビュー")}">プレビュー読込中…</span>` : '<span class="muted">プレビューなし</span>'}${work.original_image_path ? `<button type="button" class="secondary download-original" data-original-path="${esc(work.original_image_path)}" data-file-name="${esc(managedOriginalFileName(member, work))}">原画像をダウンロード</button>` : ""}</div><div class="admin-work-copy"><div class="work-meta"><span class="tag">${work.display_no ? `No.${esc(work.display_no)}` : `WORK ${work.sort_order}`}</span><span>${esc(exhibitionWorkStatus(work.status))}</span></div><h3>${esc(work.title || "作品名未入力")}</h3><dl class="caption-details"><dt>向き</dt><dd>${esc(orientationLabel(work.orientation))}</dd><dt>出展サイズ</dt><dd>${esc(printSizeLabel(work.print_size, work.print_size_detail))}</dd><dt>作者</dt><dd>${work.artist_name ? esc(work.artist_name) : '<span class="muted">未入力</span>'}</dd><dt>Camera</dt><dd>${work.camera_name ? esc(work.camera_name) : '<span class="muted">未入力</span>'}</dd><dt>Lens, other</dt><dd>${work.lens_other ? esc(work.lens_other) : '<span class="muted">未入力</span>'}</dd><dt>Description</dt><dd class="caption-text">${work.description ? esc(work.description) : '<span class="muted">未入力</span>'}</dd></dl><p class="muted">アップロード元：${esc(work.original_file_name || "不明")}</p><p class="muted">管理ファイル名：${esc(managedOriginalFileName(member, work))}</p>${work.note ? `<p class="muted">作品備考：${esc(work.note)}</p>` : ""}<div class="work-admin-controls"><label>作品番号<input class="display-no" value="${esc(work.display_no || "")}" placeholder="例：01"></label><label>確認状態<select class="review-status"><option value="submitted" ${work.status === "submitted" || work.status === "draft" ? "selected" : ""}>提出済み</option><option value="accepted" ${work.status === "accepted" ? "selected" : ""}>確認済み</option><option value="rejected" ${work.status === "rejected" ? "selected" : ""}>要修正</option></select></label><button type="button" class="update-work">作品情報を更新</button></div></div><div class="admin-work-qr"><strong>Instagram QR</strong>${work.instagram_qr_path ? `<span class="storage-image qr-image" data-storage-path="${esc(work.instagram_qr_path)}" data-alt="${esc(`${work.title || "作品"}のInstagram QRコード`)}">QR読込中…</span><small>${esc(work.instagram_qr_file_name || "登録済み")}</small><button type="button" class="secondary download-qr" data-qr-path="${esc(work.instagram_qr_path)}" data-file-name="${esc(work.instagram_qr_file_name || "instagram-qr")}">QR画像をダウンロード</button>` : '<span class="muted">未登録</span>'}</div></section>`).join("") : '<p class="muted">作品はまだ登録されていません。</p>'}</div></article>`,
     );
   });
+  root
+    .querySelector(".summary-strip")
+    .insertAdjacentHTML(
+      "beforeend",
+      `<span>掲載同意 ${visibleWorks.filter((item) => item.work.publication_consent === true).length}点</span><span>掲載不同意 ${visibleWorks.filter((item) => item.work.publication_consent === false).length}点</span><span>掲載未回答 ${visibleWorks.filter((item) => item.work.publication_consent === null).length}点</span>`,
+    );
+  root.querySelectorAll(".admin-work-card").forEach((card) => {
+    const work = visibleWorks.find(
+      (item) => item.work.id === card.dataset.workId,
+    )?.work;
+    if (!work) return;
+    card.querySelector(".caption-details").insertAdjacentHTML(
+      "beforeend",
+      `<dt>サイト掲載</dt><dd>${
+        work.publication_consent === true
+          ? "同意"
+          : work.publication_consent === false
+            ? "不同意（NO IMAGE）"
+            : '<span class="muted">未回答</span>'
+      }</dd>`,
+    );
+  });
   root.querySelector("#exportExhibitionManifest").onclick = () => {
     const headers = [
         "WorkUuid",
@@ -1713,6 +1769,7 @@ async function renderExhibitionParticipants(event) {
         "Camera",
         "LensOther",
         "Description",
+        "PublicationConsent",
         "Orientation",
         "PrintSize",
         "PrintSizeDetail",
@@ -1735,6 +1792,11 @@ async function renderExhibitionParticipants(event) {
           work.camera_name,
           work.lens_other,
           work.description,
+          work.publication_consent === true
+            ? "consent"
+            : work.publication_consent === false
+              ? "decline"
+              : "",
           work.orientation,
           work.print_size,
           work.print_size_detail,
@@ -1765,6 +1827,7 @@ async function renderExhibitionParticipants(event) {
           `Camera：${work.camera_name || ""}`,
           `Lens, other：${work.lens_other || ""}`,
           `Description：${work.description || ""}`,
+          `写真展サイト掲載：${work.publication_consent === true ? "同意" : work.publication_consent === false ? "不同意（NO IMAGE）" : "未回答"}`,
           `Instagram QR：${work.instagram_qr_path ? "あり" : "なし"}`,
         ].join("\n");
       })
