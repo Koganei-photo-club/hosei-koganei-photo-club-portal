@@ -1953,6 +1953,10 @@ async function renderExhibitionParticipants(event) {
             : '<span class="muted">未回答</span>'
       }</dd>`,
     );
+    card.querySelector(".work-admin-controls").insertAdjacentHTML(
+      "beforebegin",
+      `<fieldset class="work-translation-fields"><legend>English（任意）</legend><label>Title<input class="title-en" maxlength="500" value="${esc(work.title_en || "")}" placeholder="空欄の場合は日本語作品名を表示"></label><label>Description<textarea class="description-en" maxlength="3000" rows="3" placeholder="空欄の場合は日本語Descriptionを表示">${esc(work.description_en || "")}</textarea></label></fieldset>`,
+    );
   });
   root.querySelector("#exportExhibitionManifest").onclick = () => {
     const headers = [
@@ -1963,10 +1967,12 @@ async function renderExhibitionParticipants(event) {
         "MemberId",
         "MemberName",
         "Title",
+        "TitleEn",
         "Artist",
         "Camera",
         "LensOther",
         "Description",
+        "DescriptionEn",
         "PublicationConsent",
         "Orientation",
         "PrintSize",
@@ -1986,10 +1992,12 @@ async function renderExhibitionParticipants(event) {
           member.member_no,
           member.name,
           work.title,
+          work.title_en,
           work.artist_name,
           work.camera_name,
           work.lens_other,
           work.description,
+          work.description_en,
           work.publication_consent === true
             ? "consent"
             : work.publication_consent === false
@@ -2019,12 +2027,14 @@ async function renderExhibitionParticipants(event) {
           `【作品${index + 1}${work.display_no ? `／No.${work.display_no}` : ""}】`,
           `出展者：${member.name || ""}（${member.member_no || ""}）`,
           `作品名：${work.title || ""}`,
+          `Title：${work.title_en || ""}`,
           `向き：${orientationLabel(work.orientation)}`,
           `出展サイズ：${printSizeLabel(work.print_size, work.print_size_detail)}`,
           `作者：${work.artist_name || ""}`,
           `Camera：${work.camera_name || ""}`,
           `Lens, other：${work.lens_other || ""}`,
           `Description：${work.description || ""}`,
+          `Description (English)：${work.description_en || ""}`,
           `写真展サイト掲載：${work.publication_consent === true ? "同意" : work.publication_consent === false ? "不同意（NO IMAGE）" : "未回答"}`,
           `Instagram QR：${work.instagram_qr_path ? "あり" : "なし"}`,
         ].join("\n");
@@ -2109,10 +2119,12 @@ async function renderExhibitionParticipants(event) {
       (button.onclick = async () => {
         const card = button.closest(".admin-work-card"),
           displayNo = card.querySelector(".display-no").value.trim(),
-          status = card.querySelector(".review-status").value;
+          status = card.querySelector(".review-status").value,
+          titleEn = card.querySelector(".title-en").value.trim(),
+          descriptionEn = card.querySelector(".description-en").value.trim();
         if (
           !confirm(
-            `作品番号を「${displayNo || "未採番"}」、確認状態を「${exhibitionWorkStatus(status)}」へ更新しますか？`,
+            `作品番号、確認状態、英語版情報を更新しますか？\n作品番号：${displayNo || "未採番"}\n確認状態：${exhibitionWorkStatus(status)}`,
           )
         )
           return;
@@ -2130,8 +2142,31 @@ async function renderExhibitionParticipants(event) {
           failure(updateError);
           return;
         }
+        const { error: translationError } = await supabase
+          .from("exhibition_works")
+          .update({ title_en: titleEn, description_en: descriptionEn })
+          .eq("id", card.dataset.workId);
+        if (translationError) {
+          button.disabled = false;
+          failure(translationError);
+          return;
+        }
+        if (event.site_status !== "draft") {
+          const { error: draftError } = await supabase
+            .from("events")
+            .update({ site_status: "draft", updated_at: new Date().toISOString() })
+            .eq("id", event.id);
+          if (draftError) {
+            button.disabled = false;
+            failure(draftError);
+            return;
+          }
+          event.site_status = "draft";
+        }
         await renderExhibitionParticipants(event);
-        message("作品番号と確認状態を更新しました。");
+        message(
+          "作品番号、確認状態、英語版情報を更新しました。写真展サイトは下書き状態です。",
+        );
       }),
   );
 }
@@ -2226,8 +2261,11 @@ function renderEditor(event, initialGenre = "meeting") {
       <label>写真展タイトル<input name="exhibition_title"></label><label>出展可能作品数<input type="number" name="max_works" min="1"></label>
       <label>最低シフト人数<input type="number" name="min_shift_people" min="1"></label><label class="full">シフト枠（1行1枠）<textarea name="shift_slots_text" rows="5" placeholder="8月23日 15:00〜17:00"></textarea></label>
       <fieldset class="full public-site-fields"><legend>一般向け写真展サイト</legend><p class="muted">ここで保存した内容は「写真展サイトを公開」を押すまで一般公開されません。保存し直すと安全のためサイトは下書きへ戻ります。</p><div class="form-grid">
-        <label>写真展キー<input name="exhibition_key" maxlength="100" placeholder="例：2026-winter"><small>半角数字・小文字・ハイフン。公開URLの識別子になります。</small></label><label>サイト用タイトル<input name="site_title" maxlength="200"></label>
+        <label class="full">写真展キー<input name="exhibition_key" maxlength="100" placeholder="例：2026-winter"><small>半角数字・小文字・ハイフン。公開URLの識別子になります。</small></label>
+        <h4 class="full language-field-heading">日本語</h4><label>サイト用タイトル<input name="site_title" maxlength="200"></label><label>サイト用会場補足（任意）<input name="site_additional_info" maxlength="3000" placeholder="例：EAST館 2階 202"></label>
         <label class="full">キャッチコピー（任意）<input name="site_catchphrase" maxlength="300"></label><label class="full">紹介文<textarea name="site_description" maxlength="5000" rows="6"></textarea></label>
+        <h4 class="full language-field-heading">English（すべて任意・空欄は日本語を表示）</h4><label>Title<input name="site_title_en" maxlength="200"></label><label>Venue<input name="place_en" maxlength="500"></label>
+        <label class="full">Additional venue information<input name="site_additional_info_en" maxlength="3000"></label><label class="full">Catchphrase<input name="site_catchphrase_en" maxlength="300"></label><label class="full">Description<textarea name="site_description_en" maxlength="5000" rows="6"></textarea></label>
         <label>アンケート受付開始（任意）<input type="datetime-local" name="survey_opens_at"></label><label>アンケート受付終了（任意）<input type="datetime-local" name="survey_closes_at"></label>
         <label class="full">DM画像（JPEG・PNG・WebP、10MBまで）<input type="file" name="dm_image" accept="image/jpeg,image/png,image/webp"><small id="registeredDmImage"></small></label>
       </div></fieldset>
@@ -2257,6 +2295,12 @@ function renderEditor(event, initialGenre = "meeting") {
     "site_title",
     "site_catchphrase",
     "site_description",
+    "site_title_en",
+    "site_catchphrase_en",
+    "site_description_en",
+    "place_en",
+    "site_additional_info",
+    "site_additional_info_en",
     "fee",
     "max_works",
     "min_shift_people",
@@ -2418,6 +2462,26 @@ function renderEditor(event, initialGenre = "meeting") {
             values.genre === "exhibition" ? values.site_catchphrase.trim() : "",
           site_description:
             values.genre === "exhibition" ? values.site_description.trim() : "",
+          site_title_en:
+            values.genre === "exhibition" ? values.site_title_en.trim() : "",
+          site_catchphrase_en:
+            values.genre === "exhibition"
+              ? values.site_catchphrase_en.trim()
+              : "",
+          site_description_en:
+            values.genre === "exhibition"
+              ? values.site_description_en.trim()
+              : "",
+          place_en:
+            values.genre === "exhibition" ? values.place_en.trim() : "",
+          site_additional_info:
+            values.genre === "exhibition"
+              ? values.site_additional_info.trim()
+              : "",
+          site_additional_info_en:
+            values.genre === "exhibition"
+              ? values.site_additional_info_en.trim()
+              : "",
           survey_opens_at:
             values.genre === "exhibition" ? asIso(values.survey_opens_at) : null,
           survey_closes_at:
