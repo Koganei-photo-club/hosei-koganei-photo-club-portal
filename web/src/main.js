@@ -1053,7 +1053,16 @@ async function renderEvent(id, context) {
       if (cameraError) throw cameraError;
       cameraRemaining = data;
     }
-    view.innerHTML = `<section class="panel"><span class="tag">${eventLabel(event)}</span><h2>${esc(event.title)}</h2><dl><dt>日時</dt><dd>${fmt(event.starts_at)}${event.ends_at ? ` 〜 ${fmt(event.ends_at)}` : ""}</dd><dt>場所</dt><dd>${esc(event.place)}</dd><dt>連絡先</dt><dd>${esc(event.contact)}</dd>${event.fee_enabled ? `<dt>費用</dt><dd>${event.fee.toLocaleString()}円</dd>` : ""}${event.payment_deadline_enabled && event.payment_deadline ? `<dt>支払期限</dt><dd>${fmt(event.payment_deadline)}</dd>` : ""}</dl><p class="copy">${esc(event.details)}</p></section><section id="response" class="panel"></section>`;
+    const { data: availability, error: availabilityError } = await supabase.rpc(
+      "get_event_availability",
+      { p_event_id: id },
+    );
+    if (availabilityError) throw availabilityError;
+    const gradeList = availability.eligibleGrades || [],
+      capacityText = availability.participantLimit == null
+        ? "制限なし"
+        : `${availability.participantCount} / ${availability.participantLimit}名（残り${availability.remaining}名）`;
+    view.innerHTML = `<section class="panel"><span class="tag">${eventLabel(event)}</span><h2>${esc(event.title)}</h2><dl><dt>日時</dt><dd>${fmt(event.starts_at)}${event.ends_at ? ` 〜 ${fmt(event.ends_at)}` : ""}</dd><dt>場所</dt><dd>${esc(event.place)}</dd><dt>連絡先</dt><dd>${esc(event.contact)}</dd><dt>参加定員</dt><dd>${esc(capacityText)}</dd><dt>対象学年</dt><dd>${gradeList.length ? esc(gradeList.join("・")) : "全学年"}</dd>${event.fee_enabled ? `<dt>費用</dt><dd>${event.fee.toLocaleString()}円</dd>` : ""}${event.payment_deadline_enabled && event.payment_deadline ? `<dt>支払期限</dt><dd>${fmt(event.payment_deadline)}</dd>` : ""}</dl><p class="copy">${esc(event.details)}</p></section><section id="response" class="panel"></section>`;
     const root = document.querySelector("#response");
     if (existing) {
       root.innerHTML = `<span class="tag">YOUR RESPONSE</span><h2>回答済みです</h2><dl><dt>回答</dt><dd class="status">${existing.cancelled_at ? "キャンセル済み" : esc(existing.attendance)}</dd><dt>回答日時</dt><dd>${fmt(existing.submitted_at)}</dd>${existing.attendance === "参加" && existing.camera ? "<dt>貸出カメラ</dt><dd>希望する</dd>" : ""}${existing.attendance === "参加" && existing.disposable_camera ? "<dt>写るんです</dt><dd>希望する</dd>" : ""}${existing.allergies ? `<dt>アレルギー</dt><dd>${esc([existing.allergies, existing.other_allergy].filter(Boolean).join("・"))}</dd>` : ""}${existing.payment_status !== "not_required" ? `<dt>支払い状況</dt><dd>${esc(paymentLabel(existing.payment_status))}</dd>` : ""}${existing.payment_status === "cancelled" && existing.payment_updated_by === "system:payment-deadline" ? "<dt>キャンセル理由</dt><dd>支払期限超過による自動キャンセル</dd>" : ""}${existing.note ? `<dt>備考</dt><dd>${esc(existing.note)}</dd>` : ""}</dl><p>同じ予定へ複数回答することはできません。変更が必要な場合は幹部へ連絡してください。</p>`;
@@ -1063,7 +1072,12 @@ async function renderEvent(id, context) {
       event.genre === "camp" || event.subtype === "dining"
         ? '<fieldset><legend>アレルギー（参加者必須）</legend><label>主要項目<select name="allergies" required><option value="">選択してください</option><option>なし</option><option>卵</option><option>乳</option><option>小麦</option><option>えび</option><option>かに</option><option>そば</option><option>落花生</option><option>その他</option></select></label><label>その他・詳細<input name="other_allergy"></label></fieldset>'
         : "";
-    root.innerHTML = `<h2>出欠を回答</h2><form id="responseForm" class="stack"><section class="member-summary"><strong>${esc(member.name)}さん</strong><span>${esc([member.grade, member.faculty || member.graduate_school, member.department || member.major].filter(Boolean).join("・"))}</span></section><fieldset><legend>出欠</legend><label><input type="radio" name="attendance" value="参加" required>参加</label><label><input type="radio" name="attendance" value="不参加" required>不参加</label></fieldset><label>LINEの名前<input name="line_name" value="${esc(member?.line_name || "")}" required></label><div id="joinFields" class="stack hidden">${allergyFields}${event.camera_enabled ? `<label><input type="checkbox" name="camera" ${cameraRemaining === 0 ? "disabled" : ""}>貸出カメラを希望（残り ${cameraRemaining}台）</label>` : ""}${event.disposable_enabled ? '<label><input type="checkbox" name="disposable_camera">写るんですを希望</label>' : ""}${event.genre === "camp" ? '<div class="notice agreement"><p>本申込みの送信後は、疾病その他やむを得ない事情を除き、参加者都合による取消しは原則として認められません。また、支払期限までに費用全額の入金が確認できない場合、申込みは通知なく自動的に取り消されます。</p><label><input type="checkbox" name="agreement" required>上記条件を確認し、同意します</label></div>' : ""}</div><label>備考<textarea name="note" rows="4"></textarea></label><div class="actions"><button>この内容で回答</button></div></form>`;
+    const restrictionMessage = !availability.gradeEligible
+      ? `この予定は${member.grade}を参加対象としていません。不参加の回答は送信できます。`
+      : availability.participantLimit != null && availability.remaining === 0
+        ? "この予定は定員に達しています。不参加の回答は送信できます。"
+        : "";
+    root.innerHTML = `<h2>出欠を回答</h2>${restrictionMessage ? `<div class="notice error">${esc(restrictionMessage)}</div>` : ""}<form id="responseForm" class="stack"><section class="member-summary"><strong>${esc(member.name)}さん</strong><span>${esc([member.grade, member.faculty || member.graduate_school, member.department || member.major].filter(Boolean).join("・"))}</span></section><fieldset><legend>出欠</legend><label><input type="radio" name="attendance" value="参加" required ${availability.canParticipate ? "" : "disabled"}>参加</label><label><input type="radio" name="attendance" value="不参加" required>不参加</label></fieldset><label>LINEの名前<input name="line_name" value="${esc(member?.line_name || "")}" required></label><div id="joinFields" class="stack hidden">${allergyFields}${event.camera_enabled ? `<label><input type="checkbox" name="camera" ${cameraRemaining === 0 ? "disabled" : ""}>貸出カメラを希望（残り ${cameraRemaining}台）</label>` : ""}${event.disposable_enabled ? '<label><input type="checkbox" name="disposable_camera">写るんですを希望</label>' : ""}${event.genre === "camp" ? '<div class="notice agreement"><p>本申込みの送信後は、疾病その他やむを得ない事情を除き、参加者都合による取消しは原則として認められません。また、支払期限までに費用全額の入金が確認できない場合、申込みは通知なく自動的に取り消されます。</p><label><input type="checkbox" name="agreement" required>上記条件を確認し、同意します</label></div>' : ""}</div><label>備考<textarea name="note" rows="4"></textarea></label><div class="actions"><button>この内容で回答</button></div></form>`;
     const form = document.querySelector("#responseForm"),
       join = document.querySelector("#joinFields");
     form.querySelectorAll("[name=attendance]").forEach(
@@ -2349,6 +2363,7 @@ function renderEditor(event, initialGenre = "meeting") {
     <label>開始日時<input type="datetime-local" name="starts_at"></label><label>終了日時<input type="datetime-local" name="ends_at"></label>
     <label>場所<input name="place" value="${esc(event?.place || "")}"></label><label>企画幹部の連絡先<input name="contact" value="${esc(event?.contact || "")}"></label>
     <label class="full">必要事項<textarea name="details" rows="4">${esc(event?.details || "")}</textarea></label>
+    <section id="participationLimitFields" class="full conditional-fields"><h3>参加条件（任意）</h3><label><input type="checkbox" name="participant_limit_enabled">参加人数に上限を設ける</label><label id="participantLimitInput" class="hidden">参加上限人数<input type="number" name="participant_limit" min="1" step="1"></label><fieldset><legend>参加可能学年</legend><p class="muted">何も選択しない場合は全学年が対象です。</p><div class="grade-options">${["B1", "B2", "B3", "B4", "M1", "M2", "D1", "D2", "D3"].map((grade) => `<label><input type="checkbox" name="eligible_grades" value="${grade}">${grade}</label>`).join("")}</div></fieldset></section>
     <section id="shootingFields" class="full conditional-fields"><label><input type="checkbox" name="camera_enabled">貸出カメラを受付（上限3台）</label><label><input type="checkbox" name="disposable_enabled">写るんですを受付</label></section>
     <section id="feeFields" class="full conditional-fields"><label><input type="checkbox" name="fee_enabled">費用を表示する</label><div id="feeAmountFields" class="form-grid nested-fields hidden"><label>費用<input type="number" name="fee" min="0"></label><label><input type="checkbox" name="payment_deadline_enabled">支払期限を表示する</label><label id="paymentDeadlineField" class="hidden">支払期限<input type="datetime-local" name="payment_deadline"></label></div></section>
     <section id="exhibitionFields" class="full form-grid conditional-fields">
@@ -2407,6 +2422,10 @@ function renderEditor(event, initialGenre = "meeting") {
     event?.payment_deadline_enabled,
   );
   form.survey_enabled.checked = Boolean(event?.survey_enabled);
+  form.participant_limit_enabled.checked = event?.participant_limit != null;
+  form.participant_limit.value = event?.participant_limit || "";
+  for (const checkbox of form.querySelectorAll("[name=eligible_grades]"))
+    checkbox.checked = (event?.eligible_grades || []).includes(checkbox.value);
   form.shift_slots_text.value = (event?.shift_slots || [])
     .map((slot) => (typeof slot === "string" ? slot : slot.label))
     .join("\n");
@@ -2444,6 +2463,15 @@ function renderEditor(event, initialGenre = "meeting") {
       document
         .querySelector("#surveyPeriodFields")
         .classList.toggle("hidden", !surveyEnabled);
+      document
+        .querySelector("#participationLimitFields")
+        .classList.toggle("hidden", genre === "exhibition");
+      document
+        .querySelector("#participantLimitInput")
+        .classList.toggle(
+          "hidden",
+          genre === "exhibition" || !form.participant_limit_enabled.checked,
+        );
     };
   const snapshot = () =>
       JSON.stringify({
@@ -2470,6 +2498,12 @@ function renderEditor(event, initialGenre = "meeting") {
       if (!values.title.trim()) throw new Error("予定名は必須です。");
       const dmFile = form.dm_image.files[0],
         exhibitionKey = values.exhibition_key.trim();
+      if (
+        values.genre !== "exhibition" &&
+        form.participant_limit_enabled.checked &&
+        (!values.participant_limit || Number(values.participant_limit) < 1)
+      )
+        throw new Error("参加上限人数は1名以上で入力してください。");
       if (
         values.genre === "exhibition" &&
         exhibitionKey &&
@@ -2553,6 +2587,17 @@ function renderEditor(event, initialGenre = "meeting") {
           place: values.place.trim(),
           contact: values.contact.trim(),
           details: values.details.trim(),
+          participant_limit:
+            values.genre !== "exhibition" &&
+            form.participant_limit_enabled.checked
+              ? Number(values.participant_limit)
+              : null,
+          eligible_grades:
+            values.genre !== "exhibition"
+              ? [...form.querySelectorAll("[name=eligible_grades]:checked")].map(
+                  (checkbox) => checkbox.value,
+                )
+              : [],
           fee_enabled: feeEnabled,
           fee: feeEnabled ? Number(values.fee || 0) : 0,
           payment_deadline_enabled: deadlineEnabled,
