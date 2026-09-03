@@ -2266,7 +2266,7 @@ function renderEditor(event, initialGenre = "meeting") {
         <label class="full">キャッチコピー（任意）<input name="site_catchphrase" maxlength="300"></label><label class="full">紹介文<textarea name="site_description" maxlength="5000" rows="6"></textarea></label>
         <h4 class="full language-field-heading">English（すべて任意・空欄は日本語を表示）</h4><label>Title<input name="site_title_en" maxlength="200"></label><label>Venue<input name="place_en" maxlength="500"></label>
         <label class="full">Additional venue information<input name="site_additional_info_en" maxlength="3000"></label><label class="full">Catchphrase<input name="site_catchphrase_en" maxlength="300"></label><label class="full">Description<textarea name="site_description_en" maxlength="5000" rows="6"></textarea></label>
-        <label>アンケート受付開始（任意）<input type="datetime-local" name="survey_opens_at"></label><label>アンケート受付終了（任意）<input type="datetime-local" name="survey_closes_at"></label>
+        <label class="full"><input type="checkbox" name="survey_enabled">アンケート付き作品一覧で回答を受け付ける</label><div id="surveyPeriodFields" class="form-grid full nested-fields hidden"><label>アンケート受付開始<input type="datetime-local" name="survey_opens_at"></label><label>アンケート受付終了<input type="datetime-local" name="survey_closes_at"></label></div>
         <label class="full">DM画像（JPEG・PNG・WebP、10MBまで）<input type="file" name="dm_image" accept="image/jpeg,image/png,image/webp"><small id="registeredDmImage"></small></label>
       </div></fieldset>
     </section>
@@ -2312,6 +2312,7 @@ function renderEditor(event, initialGenre = "meeting") {
   form.payment_deadline_enabled.checked = Boolean(
     event?.payment_deadline_enabled,
   );
+  form.survey_enabled.checked = Boolean(event?.survey_enabled);
   form.shift_slots_text.value = (event?.shift_slots || [])
     .map((slot) => (typeof slot === "string" ? slot : slot.label))
     .join("\n");
@@ -2326,7 +2327,8 @@ function renderEditor(event, initialGenre = "meeting") {
           genre === "camp" ||
           (genre === "meeting" && form.subtype.value === "dining"),
         feeEnabled = feeCapable && form.fee_enabled.checked,
-        deadlineEnabled = feeEnabled && form.payment_deadline_enabled.checked;
+        deadlineEnabled = feeEnabled && form.payment_deadline_enabled.checked,
+        surveyEnabled = genre === "exhibition" && form.survey_enabled.checked;
       document
         .querySelector("#subtypeField")
         .classList.toggle("hidden", genre !== "meeting");
@@ -2345,6 +2347,9 @@ function renderEditor(event, initialGenre = "meeting") {
       document
         .querySelector("#exhibitionFields")
         .classList.toggle("hidden", genre !== "exhibition");
+      document
+        .querySelector("#surveyPeriodFields")
+        .classList.toggle("hidden", !surveyEnabled);
     };
   const snapshot = () =>
       JSON.stringify({
@@ -2399,6 +2404,14 @@ function renderEditor(event, initialGenre = "meeting") {
         values.survey_closes_at <= values.survey_opens_at
       )
         throw new Error("アンケート受付終了は受付開始より後にしてください。");
+      if (
+        values.genre === "exhibition" &&
+        form.survey_enabled.checked &&
+        (!values.survey_opens_at || !values.survey_closes_at)
+      )
+        throw new Error(
+          "アンケートを受け付ける場合は、受付開始と受付終了を入力してください。",
+        );
       if (!draft) {
         if (!values.starts_at || !values.place.trim() || !values.contact.trim())
           throw new Error("保存には日時、場所、企画幹部の連絡先が必要です。");
@@ -2486,6 +2499,8 @@ function renderEditor(event, initialGenre = "meeting") {
             values.genre === "exhibition" ? asIso(values.survey_opens_at) : null,
           survey_closes_at:
             values.genre === "exhibition" ? asIso(values.survey_closes_at) : null,
+          survey_enabled:
+            values.genre === "exhibition" && form.survey_enabled.checked,
           site_status:
             values.genre === "exhibition" ? "draft" : event?.site_status || "draft",
           max_works:
