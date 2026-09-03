@@ -316,14 +316,29 @@ async function renderArchives(memberId) {
       (a, b) => Number(a.display_no) - Number(b.display_no),
     ),
     grouped = sortedWorks.reduce((result, work) => {
-    (result[work.exhibition_id] ??= []).push(work);
-    return result;
-  }, {});
+      (result[work.exhibition_id] ??= []).push(work);
+      return result;
+    }, {});
+  root.innerHTML = "";
   Object.values(grouped).forEach((items) =>
     root.insertAdjacentHTML(
       "beforeend",
-      `<article class="panel"><span class="tag">EXHIBITION ARCHIVE</span><h3>${esc(items[0].archive_exhibitions.title)}</h3><div class="grid">${items.map((w) => `<section><p class="tag">No.${esc(w.display_no)}</p><h3>${esc(w.title)}</h3><p><strong>${w.favorite_count}票</strong>・${w.favorite_rate}%</p><details><summary>寄せられた感想（${w.archive_work_comments.length}件）</summary><ul>${w.archive_work_comments.map((c) => `<li>${esc(c.comment)}</li>`).join("")}</ul></details></section>`).join("")}</div></article>`,
+      `<article class="panel"><span class="tag">EXHIBITION ARCHIVE</span><h3>${esc(items[0].archive_exhibitions.title)}</h3><div class="grid">${items.map((w) => `<section class="archive-work-card">${w.image_path && w.image_visible ? `<div class="archive-work-image" data-path="${esc(w.image_path)}"><span class="muted">作品画像を読み込んでいます…</span></div>` : '<div class="archive-work-image is-empty"><span class="muted">画像は未登録です</span></div>'}<p class="tag">No.${esc(w.display_no)}</p><h3>${esc(w.title)}</h3><p><strong>${w.favorite_count}票</strong>・${w.favorite_rate}%</p><details><summary>寄せられた感想（${w.archive_work_comments.length}件）</summary><ul>${w.archive_work_comments.map((c) => `<li>${esc(c.comment)}</li>`).join("")}</ul></details></section>`).join("")}</div></article>`,
     ),
+  );
+  root.querySelectorAll(".archive-work-image[data-path]").forEach(
+    async (target) => {
+      const { data, error } = await supabase.storage
+        .from("exhibition-previews")
+        .createSignedUrl(target.dataset.path, 900);
+      if (error) {
+        target.innerHTML =
+          '<span class="muted">画像を表示できませんでした。</span>';
+        return;
+      }
+      target.innerHTML = `<img src="${esc(data.signedUrl)}" alt="本人の出展作品" draggable="false">`;
+      target.oncontextmenu = (event) => event.preventDefault();
+    },
   );
 }
 
@@ -1073,6 +1088,16 @@ async function renderAdmin(context) {
     hideMessage();
     const view = document.querySelector("#view");
     view.innerHTML = `<div class="admin-nav"><button id="showEvents" class="secondary">予定管理</button><button id="showReceipt" class="secondary">領収証発行</button></div><section id="eventAdmin"><div class="event-genre-tabs" role="tablist" aria-label="予定ジャンル"><button type="button" data-genre="meeting">全体会</button><button type="button" data-genre="camp">合宿</button><button type="button" data-genre="exhibition">写真展</button></div><div class="event-list-heading"><div><p class="eyebrow">EVENT MANAGEMENT</p><h2 id="eventGenreTitle"></h2></div><button id="newEvent">新規予定を作成</button></div><section class="panel"><div id="adminList"></div><p id="emptyGenre" class="muted hidden">このジャンルの予定はまだありません。</p></section><section id="editor" class="panel hidden"></section><section id="participantAdmin" class="panel hidden"></section></section><section id="receiptAdmin" class="panel hidden"><span class="tag">MEMBERSHIP RECEIPT</span><h2>部費領収証を発行</h2><p class="muted">既存部員は大学メールから情報を呼び出せます。登録と同時に年度在籍が有効になります。</p><form id="receiptForm" class="form-grid"><label class="full">大学メールアドレス<div class="inline-field"><input type="email" name="email" required autocomplete="off"><button type="button" id="findMember" class="secondary">名簿から検索</button></div></label><label>氏名<input name="name" required></label><label>学年<input name="grade" required placeholder="B1 / M1"></label><label>学部（学部生）<input name="faculty"></label><label>学科（学部生）<input name="department"></label><label>研究科（院生）<input name="graduate_school"></label><label>専攻（院生）<input name="major"></label><label>性別<select name="gender"><option value=""></option><option>男性</option><option>女性</option><option>その他</option><option>回答しない</option></select></label><label>LINEの名前<input name="line_name" required></label><label>前年度在籍状況<select name="previous_member"><option value=""></option><option>在籍</option><option>未在籍</option><option>不明</option></select></label><label>年度<input type="number" name="fiscal_year" min="2000" max="2200" required value="${fiscalYear()}"></label><label>金額<input type="number" name="amount" min="0" required value="6000"></label><div class="full notice">但書は「<strong><span id="receiptYear">${fiscalYear()}</span>年度部費として</strong>」で記録されます。</div><div class="actions full"><button id="issueReceipt">年度在籍登録・領収証発行</button></div></form><section id="receiptResult" class="receipt-result hidden"></section></section>`;
+    document
+      .querySelector(".admin-nav")
+      .insertAdjacentHTML(
+        "beforeend",
+        '<button id="showArchiveImages" class="secondary">過去写真展画像</button>',
+      );
+    view.insertAdjacentHTML(
+      "beforeend",
+      '<section id="archiveImageAdmin" class="panel hidden"></section>',
+    );
     const list = document.querySelector("#adminList");
     events.forEach((event) =>
       list.insertAdjacentHTML(
@@ -1151,19 +1176,140 @@ async function renderAdmin(context) {
     document.querySelector("#newEvent").onclick = () =>
       renderEditor(null, adminGenreTab);
     const eventAdmin = document.querySelector("#eventAdmin"),
-      receiptAdmin = document.querySelector("#receiptAdmin");
+      receiptAdmin = document.querySelector("#receiptAdmin"),
+      archiveImageAdmin = document.querySelector("#archiveImageAdmin"),
+      hideAdminSections = () => {
+        eventAdmin.classList.add("hidden");
+        receiptAdmin.classList.add("hidden");
+        archiveImageAdmin.classList.add("hidden");
+      };
     document.querySelector("#showEvents").onclick = () => {
+      hideAdminSections();
       eventAdmin.classList.remove("hidden");
-      receiptAdmin.classList.add("hidden");
     };
     document.querySelector("#showReceipt").onclick = () => {
-      eventAdmin.classList.add("hidden");
+      hideAdminSections();
       receiptAdmin.classList.remove("hidden");
+    };
+    document.querySelector("#showArchiveImages").onclick = () => {
+      hideAdminSections();
+      archiveImageAdmin.classList.remove("hidden");
+      renderArchiveImageImport();
     };
     setupReceiptForm();
   } catch (error) {
     failure(error);
   }
+}
+
+async function renderArchiveImageImport() {
+  const root = document.querySelector("#archiveImageAdmin");
+  root.innerHTML = "<p>過去写真展の画像情報を読み込んでいます…</p>";
+  const { data: works, error } = await supabase
+    .from("archive_works")
+    .select(
+      "id,legacy_work_uuid,display_no,title,source_file_name,image_path,archive_exhibitions!inner(exhibition_key,title)",
+    );
+  if (error) return failure(error);
+  const grouped = (works || []).reduce((result, work) => {
+      const key = work.archive_exhibitions.exhibition_key;
+      (result[key] ??= {
+        title: work.archive_exhibitions.title,
+        works: [],
+      }).works.push(work);
+      return result;
+    }, {}),
+    keys = Object.keys(grouped).sort().reverse();
+  if (!keys.length) {
+    root.innerHTML = '<p class="muted">過去写真展が登録されていません。</p>';
+    return;
+  }
+  root.innerHTML = `<span class="tag">ARCHIVE IMAGE IMPORT</span><h2>過去写真展画像を一括登録</h2><p class="muted">Google DriveからダウンロードしたZIPを展開し、中の画像をすべて選択してください。ファイル名を作品UUIDへ自動照合し、非公開Storageへ保存します。</p><div class="form-grid"><label>写真展<select id="archiveImageExhibition">${keys.map((key) => `<option value="${esc(key)}">${esc(grouped[key].title)}</option>`).join("")}</select></label><label>表示用画像（複数選択）<input id="archiveImageFiles" type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" multiple></label></div><div id="archiveImageCheck" class="notice">画像を選択すると照合結果を表示します。</div><div class="actions"><button id="uploadArchiveImages" disabled>照合済み画像をアップロード</button></div>`;
+  const exhibitionSelect = root.querySelector("#archiveImageExhibition"),
+    fileInput = root.querySelector("#archiveImageFiles"),
+    check = root.querySelector("#archiveImageCheck"),
+    uploadButton = root.querySelector("#uploadArchiveImages"),
+    normalized = (value) => String(value || "").normalize("NFC"),
+    extension = (file) => {
+      if (file.type === "image/png") return "png";
+      if (file.type === "image/webp") return "webp";
+      return "jpg";
+    };
+  let matched = [];
+  const inspectFiles = () => {
+    const target = grouped[exhibitionSelect.value],
+      byName = new Map(
+        target.works
+          .filter((work) => work.source_file_name)
+          .map((work) => [normalized(work.source_file_name), work]),
+      ),
+      selectedNames = new Set(),
+      duplicates = [],
+      unmatched = [];
+    matched = [];
+    [...fileInput.files].forEach((file) => {
+      const name = normalized(file.name),
+        work = byName.get(name);
+      if (selectedNames.has(name)) duplicates.push(file.name);
+      selectedNames.add(name);
+      if (!work) unmatched.push(file.name);
+      else matched.push({ file, work });
+    });
+    const missing = target.works.filter(
+        (work) =>
+          work.source_file_name &&
+          !selectedNames.has(normalized(work.source_file_name)),
+      ),
+      invalid = matched.filter(
+        ({ file }) =>
+          !["image/jpeg", "image/png", "image/webp"].includes(file.type) ||
+          file.size > 10485760,
+      );
+    uploadButton.disabled =
+      !matched.length ||
+      duplicates.length > 0 ||
+      unmatched.length > 0 ||
+      missing.length > 0 ||
+      invalid.length > 0;
+    check.classList.toggle("error", uploadButton.disabled);
+    check.innerHTML = `<strong>照合 ${matched.length} / ${target.works.length}点</strong><br>${missing.length ? `不足 ${missing.length}点` : "不足なし"}／${unmatched.length ? `未対応 ${unmatched.length}点` : "未対応なし"}／${duplicates.length ? `重複 ${duplicates.length}点` : "重複なし"}${invalid.length ? `／形式・容量エラー ${invalid.length}点` : ""}`;
+  };
+  exhibitionSelect.onchange = inspectFiles;
+  fileInput.onchange = inspectFiles;
+  uploadButton.onclick = async () => {
+    if (uploadButton.disabled) return;
+    if (
+      !confirm(
+        `${grouped[exhibitionSelect.value].title}の表示画像${matched.length}点を非公開Storageへ登録しますか？`,
+      )
+    )
+      return;
+    uploadButton.disabled = true;
+    try {
+      for (let index = 0; index < matched.length; index += 1) {
+        const { file, work } = matched[index],
+          path = `archive/${exhibitionSelect.value}/${work.legacy_work_uuid}/preview.${extension(file)}`;
+        check.innerHTML = `<strong>${index + 1} / ${matched.length}点をアップロード中…</strong><br>No.${esc(work.display_no)} ${esc(work.title)}`;
+        const { error: uploadError } = await supabase.storage
+          .from("exhibition-previews")
+          .upload(path, file, { upsert: true, contentType: file.type });
+        if (uploadError) throw uploadError;
+        const { error: updateError } = await supabase
+          .from("archive_works")
+          .update({ image_path: path, image_visible: true })
+          .eq("id", work.id);
+        if (updateError) throw updateError;
+      }
+      check.classList.remove("error");
+      check.innerHTML = `<strong>${matched.length}点の登録が完了しました。</strong><br>部員画面で本人の作品画像を確認できます。`;
+      message("過去写真展の表示画像を登録しました。");
+    } catch (uploadError) {
+      uploadButton.disabled = false;
+      failure(uploadError);
+      check.classList.add("error");
+      check.textContent = `画像登録を中断しました：${uploadError.message || uploadError}`;
+    }
+  };
 }
 
 async function renderParticipants(event) {
