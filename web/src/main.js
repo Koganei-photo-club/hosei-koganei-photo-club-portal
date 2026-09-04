@@ -256,7 +256,9 @@ async function renderPortal(context) {
       eventRoot.innerHTML =
         '<div class="panel">現在参加できる活動はありません。</div>';
     events?.forEach((event) => {
-      const response = event.event_responses?.[0],
+      const response = event.event_responses?.find(
+        (r) => r.member_id === context.member?.id
+      ),
         entry = exhibitionEntries[event.id],
         entryWorks = (entry?.exhibition_works || []).filter(
           (work) => work.status !== "withdrawn",
