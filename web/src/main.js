@@ -529,7 +529,10 @@ async function renderExhibitionEvent(event, context) {
                 ? "取り下げ済み"
                 : "下書き"
             : "未入力";
-    view.innerHTML = `<section class="panel"><span class="tag">EXHIBITION ENTRY</span><h2>${esc(event.exhibition_title || event.title)}</h2><dl><dt>日時</dt><dd>${fmt(event.starts_at)}${event.ends_at ? ` 〜 ${fmt(event.ends_at)}` : ""}</dd><dt>場所</dt><dd>${esc(event.place)}</dd><dt>連絡先</dt><dd>${esc(event.contact)}</dd><dt>出展上限</dt><dd>1人 ${event.max_works}作品</dd></dl><p class="copy">${esc(event.details)}</p></section><section class="panel exhibition-entry-panel"><div class="entry-heading"><div><span class="tag">YOUR ENTRY</span><h2>出展作品を登録</h2></div><span class="status">${entryState}</span></div>${hasRejected ? '<div class="notice error">要修正になっている作品があります。該当作品を修正し、変更内容を再提出してください。</div>' : ""}<p class="muted">原画像は非公開で保存され、本人と管理者だけが閲覧できます。JPEG・PNG・TIFF・HEIC・HEIF、1作品50MBまでです。</p><form id="exhibitionEntryForm" class="stack"><div id="workEditors" class="stack"></div><div class="actions work-actions"><button type="button" id="addWork" class="secondary">作品を追加</button></div><label>出展全体に関する備考<textarea name="entry_note" rows="3">${esc(entry?.note || "")}</textarea></label><div class="notice">「下書き保存」では提出は完了しません。「出展申込を確定」を押すと、登録した全作品が提出済みになります。</div><div class="actions"><button type="button" id="saveEntryDraft" class="secondary">下書き保存</button><button type="submit" id="submitEntry">${entry?.status === "submitted" ? "申込済み" : "出展申込を確定"}</button></div></form></section>`;
+    const registrationClosed =
+      !event.registration_deadline ||
+      new Date() > new Date(event.registration_deadline);
+    view.innerHTML = `<section class="panel"><span class="tag">EXHIBITION ENTRY</span><h2>${esc(event.exhibition_title || event.title)}</h2><dl><dt>日時</dt><dd>${fmt(event.starts_at)}${event.ends_at ? ` 〜 ${fmt(event.ends_at)}` : ""}</dd><dt>申込締切</dt><dd>${event.registration_deadline ? fmt(event.registration_deadline) : "未設定"}</dd><dt>場所</dt><dd>${esc(event.place)}</dd><dt>連絡先</dt><dd>${esc(event.contact)}</dd><dt>出展上限</dt><dd>1人 ${event.max_works}作品</dd></dl><p class="copy">${esc(event.details)}</p></section><section class="panel exhibition-entry-panel"><div class="entry-heading"><div><span class="tag">YOUR ENTRY</span><h2>出展作品を登録</h2></div><span class="status">${entryState}</span></div>${registrationClosed ? '<div class="notice error">申込受付は終了しました。登録済みの内容は閲覧できます。</div>' : ""}${hasRejected ? '<div class="notice error">要修正になっている作品があります。該当作品を修正し、変更内容を再提出してください。</div>' : ""}<p class="muted">原画像は非公開で保存され、本人と管理者だけが閲覧できます。JPEG・PNG・TIFF・HEIC・HEIF、1作品50MBまでです。</p><form id="exhibitionEntryForm" class="stack"><div id="workEditors" class="stack"></div><div class="actions work-actions"><button type="button" id="addWork" class="secondary">作品を追加</button></div><label>出展全体に関する備考<textarea name="entry_note" rows="3">${esc(entry?.note || "")}</textarea></label><div class="notice">「下書き保存」では提出は完了しません。「出展申込を確定」を押すと、登録した全作品が提出済みになります。</div><div class="actions"><button type="button" id="saveEntryDraft" class="secondary">下書き保存</button><button type="submit" id="submitEntry">${entry?.status === "submitted" ? "申込済み" : "出展申込を確定"}</button></div></form></section>`;
     const form = document.querySelector("#exhibitionEntryForm"),
       editors = document.querySelector("#workEditors"),
       addButton = document.querySelector("#addWork");
@@ -713,6 +716,10 @@ async function renderExhibitionEvent(event, context) {
     };
     works.forEach(addEditor);
     if (!works.length) addEditor();
+    if (registrationClosed)
+      form.querySelectorAll("input, select, textarea, button").forEach((control) => {
+        control.disabled = true;
+      });
     const draftButton = document.querySelector("#saveEntryDraft"),
       submitButton = document.querySelector("#submitEntry"),
       formSnapshot = () =>
@@ -745,6 +752,11 @@ async function renderExhibitionEvent(event, context) {
         }),
       initialSnapshot = formSnapshot(),
       updateEntryButtons = () => {
+        if (registrationClosed) {
+          draftButton.disabled = true;
+          submitButton.disabled = true;
+          return;
+        }
         const changed = formSnapshot() !== initialSnapshot;
         draftButton.disabled = !changed;
         submitButton.disabled = entry?.status === "submitted" && !changed;
@@ -1062,10 +1074,14 @@ async function renderEvent(id, context) {
       capacityText = availability.participantLimit == null
         ? "制限なし"
         : `${availability.participantCount} / ${availability.participantLimit}名（残り${availability.remaining}名）`;
-    view.innerHTML = `<section class="panel"><span class="tag">${eventLabel(event)}</span><h2>${esc(event.title)}</h2><dl><dt>日時</dt><dd>${fmt(event.starts_at)}${event.ends_at ? ` 〜 ${fmt(event.ends_at)}` : ""}</dd><dt>場所</dt><dd>${esc(event.place)}</dd><dt>連絡先</dt><dd>${esc(event.contact)}</dd><dt>参加定員</dt><dd>${esc(capacityText)}</dd><dt>対象学年</dt><dd>${gradeList.length ? esc(gradeList.join("・")) : "全学年"}</dd>${event.fee_enabled ? `<dt>費用</dt><dd>${event.fee.toLocaleString()}円</dd>` : ""}${event.payment_deadline_enabled && event.payment_deadline ? `<dt>支払期限</dt><dd>${fmt(event.payment_deadline)}</dd>` : ""}</dl><p class="copy">${esc(event.details)}</p></section><section id="response" class="panel"></section>`;
+    view.innerHTML = `<section class="panel"><span class="tag">${eventLabel(event)}</span><h2>${esc(event.title)}</h2><dl><dt>日時</dt><dd>${fmt(event.starts_at)}${event.ends_at ? ` 〜 ${fmt(event.ends_at)}` : ""}</dd><dt>申込締切</dt><dd>${event.registration_deadline ? fmt(event.registration_deadline) : "未設定"}</dd><dt>場所</dt><dd>${esc(event.place)}</dd><dt>連絡先</dt><dd>${esc(event.contact)}</dd><dt>参加定員</dt><dd>${esc(capacityText)}</dd><dt>対象学年</dt><dd>${gradeList.length ? esc(gradeList.join("・")) : "全学年"}</dd>${event.fee_enabled ? `<dt>費用</dt><dd>${event.fee.toLocaleString()}円</dd>` : ""}${event.payment_deadline_enabled && event.payment_deadline ? `<dt>支払期限</dt><dd>${fmt(event.payment_deadline)}</dd>` : ""}</dl><p class="copy">${esc(event.details)}</p></section><section id="response" class="panel"></section>`;
     const root = document.querySelector("#response");
     if (existing) {
       root.innerHTML = `<span class="tag">YOUR RESPONSE</span><h2>回答済みです</h2><dl><dt>回答</dt><dd class="status">${existing.cancelled_at ? "キャンセル済み" : esc(existing.attendance)}</dd><dt>回答日時</dt><dd>${fmt(existing.submitted_at)}</dd>${existing.attendance === "参加" && existing.camera ? "<dt>貸出カメラ</dt><dd>希望する</dd>" : ""}${existing.attendance === "参加" && existing.disposable_camera ? "<dt>写るんです</dt><dd>希望する</dd>" : ""}${existing.allergies ? `<dt>アレルギー</dt><dd>${esc([existing.allergies, existing.other_allergy].filter(Boolean).join("・"))}</dd>` : ""}${existing.payment_status !== "not_required" ? `<dt>支払い状況</dt><dd>${esc(paymentLabel(existing.payment_status))}</dd>` : ""}${existing.payment_status === "cancelled" && existing.payment_updated_by === "system:payment-deadline" ? "<dt>キャンセル理由</dt><dd>支払期限超過による自動キャンセル</dd>" : ""}${existing.note ? `<dt>備考</dt><dd>${esc(existing.note)}</dd>` : ""}</dl><p>同じ予定へ複数回答することはできません。変更が必要な場合は幹部へ連絡してください。</p>`;
+      return;
+    }
+    if (!availability.registrationOpen) {
+      root.innerHTML = '<span class="tag">CLOSED</span><h2>申込受付は終了しました</h2><p>締切後の回答は受け付けていません。必要な場合は企画幹部へお問い合わせください。</p>';
       return;
     }
     const allergyFields =
@@ -2411,6 +2427,7 @@ function renderEditor(event, initialGenre = "meeting") {
     <label>ジャンル<select name="genre"><option value="meeting">全体会</option><option value="camp">合宿</option><option value="exhibition">写真展</option></select></label>
     <label id="subtypeField">全体会種別<select name="subtype"><option value="shooting">撮影会</option><option value="dining">お食事会</option></select></label>
     <label>開始日時<input type="datetime-local" name="starts_at"></label><label>終了日時<input type="datetime-local" name="ends_at"></label>
+    <label>申込締切（保存時必須）<input type="datetime-local" name="registration_deadline"></label>
     <label>場所<input name="place" value="${esc(event?.place || "")}"></label><label>企画幹部の連絡先<input name="contact" value="${esc(event?.contact || "")}"></label>
     <label class="full">必要事項<textarea name="details" rows="4">${esc(event?.details || "")}</textarea></label>
     <section id="participationLimitFields" class="full conditional-fields"><h3>参加条件（任意）</h3><label><input type="checkbox" name="participant_limit_enabled">参加人数に上限を設ける</label><label id="participantLimitInput" class="hidden">参加上限人数<input type="number" name="participant_limit" min="1" step="1"></label><fieldset><legend>参加可能学年</legend><p class="muted">何も選択しない場合は全学年が対象です。</p><div class="grade-options">${["B1", "B2", "B3", "B4", "M1", "M2", "D1", "D2", "D3"].map((grade) => `<label><input type="checkbox" name="eligible_grades" value="${grade}">${grade}</label>`).join("")}</div></fieldset></section>
@@ -2445,6 +2462,7 @@ function renderEditor(event, initialGenre = "meeting") {
   form.subtype.value = event?.subtype || "shooting";
   form.starts_at.value = local(event?.starts_at);
   form.ends_at.value = local(event?.ends_at);
+  form.registration_deadline.value = local(event?.registration_deadline);
   form.payment_deadline.value = local(event?.payment_deadline);
   form.survey_opens_at.value = local(event?.survey_opens_at);
   form.survey_closes_at.value = local(event?.survey_closes_at);
@@ -2593,6 +2611,10 @@ function renderEditor(event, initialGenre = "meeting") {
       if (!draft) {
         if (!values.starts_at || !values.place.trim() || !values.contact.trim())
           throw new Error("保存には日時、場所、企画幹部の連絡先が必要です。");
+        if (!values.registration_deadline)
+          throw new Error("保存には申込締切が必要です。");
+        if (values.registration_deadline > values.starts_at)
+          throw new Error("申込締切は開始日時以前にしてください。");
         if (values.ends_at && values.ends_at < values.starts_at)
           throw new Error("終了日時は開始日時以降にしてください。");
         if (values.fee_enabled === "on" && values.fee === "")
@@ -2634,6 +2656,7 @@ function renderEditor(event, initialGenre = "meeting") {
           subtype: values.genre === "meeting" ? values.subtype : "",
           starts_at: asIso(values.starts_at),
           ends_at: asIso(values.ends_at),
+          registration_deadline: asIso(values.registration_deadline),
           place: values.place.trim(),
           contact: values.contact.trim(),
           details: values.details.trim(),
