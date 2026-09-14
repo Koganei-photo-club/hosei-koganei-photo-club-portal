@@ -1,5 +1,15 @@
 import "./styles.css";
 import { configured, googleClientId, supabase } from "./supabase.js";
+import {
+  ensurePortalAvailable,
+  maintenanceLoginMarkup,
+  maintenanceState,
+  publicMaintenanceInfo,
+  renderMaintenanceAdmin,
+  renderMaintenanceBlock,
+  startMaintenancePolling,
+  stopMaintenancePolling,
+} from "./maintenance.js";
 
 const app = document.querySelector("#app");
 let session = null;
@@ -108,9 +118,15 @@ async function createGoogleNonce() {
 async function renderAuth() {
   layout("活動ポータル");
   hideMessage();
+  let maintenanceInfo = null;
+  try {
+    maintenanceInfo = await publicMaintenanceInfo(supabase);
+  } catch (error) {
+    console.error("public maintenance information unavailable", error);
+  }
   app.insertAdjacentHTML(
     "beforeend",
-    `<section class="auth-layer"><div class="panel auth-card"><p class="eyebrow">SECURE SIGN IN</p><h2>Googleアカウントでログイン</h2><p class="copy">部員は大学のGoogleアカウント、幹部は管理者として登録されたGoogleアカウントを使用してください。</p><div id="googleSignIn"></div><p id="authMessage" class="muted">Googleログインを準備しています…</p><p class="muted">LINE内で開いている場合は、外部ブラウザで開いてください。</p></div></section>`,
+    `<section class="auth-layer"><div class="panel auth-card">${maintenanceLoginMarkup(maintenanceInfo)}<p class="eyebrow">SECURE SIGN IN</p><h2>Googleアカウントでログイン</h2><p class="copy">部員は大学のGoogleアカウント、幹部は管理者として登録されたGoogleアカウントを使用してください。</p><div id="googleSignIn"></div><p id="authMessage" class="muted">Googleログインを準備しています…</p><p class="muted">LINE内で開いている場合は、外部ブラウザで開いてください。</p></div></section>`,
   );
   const authMessage = document.querySelector("#authMessage");
   if (!googleClientId) {
@@ -165,7 +181,55 @@ function renderAccessDenied(email) {
 }
 
 async function navigate() {
+  stopMaintenancePolling();
   try {
+    const path = route();
+    let maintenance;
+    try {
+      maintenance = await maintenanceState(supabase);
+    } catch (error) {
+      console.error("maintenance state unavailable", error);
+      renderMaintenanceBlock({
+        app,
+        layout,
+        hideMessage,
+        supabase,
+        state: { state: "state_unavailable" },
+        retry: navigate,
+      });
+      return;
+    }
+    if (path === "/maintenance-admin") {
+      if (!maintenance.isMaintenanceAdmin) {
+        renderAccessDenied(session.user.email);
+        return;
+      }
+      return renderMaintenanceAdmin({
+        supabase,
+        layout,
+        hideMessage,
+        message,
+        failure,
+      });
+    }
+    if (maintenance.state === "maintenance_state_error") {
+      if (maintenance.isMaintenanceAdmin) {
+        location.hash = "/maintenance-admin";
+        return renderMaintenanceAdmin({
+          supabase,
+          layout,
+          hideMessage,
+          message,
+          failure,
+        });
+      }
+      renderMaintenanceBlock({ app, layout, hideMessage, supabase, state: maintenance, retry: navigate });
+      return;
+    }
+    if (maintenance.state === "maintenance" && !maintenance.isMaintenanceAdmin) {
+      renderMaintenanceBlock({ app, layout, hideMessage, supabase, state: maintenance, retry: navigate });
+      return;
+    }
     if (!overdueChecked) {
       overdueChecked = true;
       const { error } = await supabase.rpc(
@@ -174,15 +238,15 @@ async function navigate() {
       if (error) console.warn("期限超過処理を実行できませんでした。", error);
     }
     const context = await getContext();
-    if (!context.member && !context.admin) {
+    if (!context.member && !context.admin && !maintenance.isMaintenanceAdmin) {
       renderAccessDenied(context.email);
       return;
     }
-    const path = route();
+    startMaintenancePolling(supabase, () => navigate());
     if (path.startsWith("/event/"))
       return renderEvent(path.split("/")[2], context);
-    if (path === "/admin") return renderAdmin(context);
-    return renderPortal(context);
+    if (path === "/admin") return renderAdmin(context, maintenance);
+    return renderPortal(context, maintenance);
   } catch (error) {
     layout();
     failure(error);
@@ -212,7 +276,7 @@ async function getContext() {
   return { email, member, admin };
 }
 
-async function renderPortal(context) {
+async function renderPortal(context, maintenance = null) {
   layout(
     "活動ポータル",
     '<button id="logout" class="secondary">ログアウト</button>',
@@ -225,6 +289,13 @@ async function renderPortal(context) {
         .insertAdjacentHTML(
           "afterbegin",
           '<a class="button secondary" href="#/admin">管理画面</a>',
+        );
+    if (maintenance?.isMaintenanceAdmin)
+      document
+        .querySelector(".header-actions")
+        .insertAdjacentHTML(
+          "afterbegin",
+          '<a class="button secondary" href="#/maintenance-admin">メンテナンス管理</a>',
         );
     const { data: events, error } = await supabase
       .from("events")
@@ -786,6 +857,7 @@ async function renderExhibitionEvent(event, context) {
         ),
         editorList = [...editors.querySelectorAll(".work-editor")];
       try {
+        if (!(await ensurePortalAvailable(supabase))) return;
         if (submitted && !editorList.length)
           throw new Error("提出する作品を1件以上追加してください。");
         editorList.forEach((editor, index) => {
@@ -1115,6 +1187,7 @@ async function renderEvent(id, context) {
     );
     form.onsubmit = async (submit) => {
       submit.preventDefault();
+      if (!(await ensurePortalAvailable(supabase))) return;
       const values = Object.fromEntries(new FormData(form)),
         button = form.querySelector("button");
       button.disabled = true;
@@ -1157,7 +1230,7 @@ const paymentLabel = (value) =>
         ? "キャンセル"
         : "対象外";
 
-async function renderAdmin(context) {
+async function renderAdmin(context, maintenance = null) {
   context ??= await getContext();
   layout(
     "予定管理",
@@ -1166,6 +1239,14 @@ async function renderAdmin(context) {
   document.querySelector("#logout").onclick = () => supabase.auth.signOut();
   try {
     if (!context.admin) throw new Error("管理者権限がありません。");
+    maintenance ??= await maintenanceState(supabase);
+    if (maintenance.isMaintenanceAdmin)
+      document
+        .querySelector(".header-actions")
+        .insertAdjacentHTML(
+          "afterbegin",
+          '<a class="button secondary" href="#/maintenance-admin">メンテナンス管理</a>',
+        );
     const { data: events, error } = await supabase
       .from("events")
       .select("*")
