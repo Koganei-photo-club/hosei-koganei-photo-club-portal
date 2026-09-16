@@ -15,6 +15,8 @@ const app = document.querySelector("#app");
 let session = null;
 let overdueChecked = false;
 let adminGenreTab = "meeting";
+let authRenderGeneration = 0;
+let authRenderTask = null;
 
 const esc = (value) => {
   const node = document.createElement("div");
@@ -67,7 +69,15 @@ async function boot() {
   const { data } = await supabase.auth.getSession();
   session = data.session;
   supabase.auth.onAuthStateChange((_event, next) => {
+    const hadSession = Boolean(session);
     session = next;
+    if (next) {
+      authRenderGeneration += 1;
+      authRenderTask = null;
+    } else if (hadSession) {
+      authRenderGeneration += 1;
+      authRenderTask = null;
+    }
     setTimeout(() => (next ? navigate() : renderAuth()), 0);
   });
   if (session) navigate();
@@ -115,7 +125,14 @@ async function createGoogleNonce() {
   return { nonce, hashed };
 }
 
-async function renderAuth() {
+function renderAuth() {
+  if (authRenderTask) return authRenderTask;
+  const generation = ++authRenderGeneration;
+  authRenderTask = performAuthRender(generation);
+  return authRenderTask;
+}
+
+async function performAuthRender(generation) {
   layout("活動ポータル");
   hideMessage();
   let maintenanceInfo = null;
@@ -124,18 +141,33 @@ async function renderAuth() {
   } catch (error) {
     console.error("public maintenance information unavailable", error);
   }
+  if (generation !== authRenderGeneration || session) return;
   app.insertAdjacentHTML(
     "beforeend",
     `<section class="auth-layer"><div class="panel auth-card">${maintenanceLoginMarkup(maintenanceInfo)}<p class="eyebrow">SECURE SIGN IN</p><h2>Googleアカウントでログイン</h2><p class="copy">部員は大学のGoogleアカウント、幹部は管理者として登録されたGoogleアカウントを使用してください。</p><div id="googleSignIn"></div><p id="authMessage" class="muted">Googleログインを準備しています…</p><p class="muted">LINE内で開いている場合は、外部ブラウザで開いてください。</p></div></section>`,
   );
-  const authMessage = document.querySelector("#authMessage");
+  const authLayer = app.querySelector(".auth-layer"),
+    authMessage = authLayer.querySelector("#authMessage"),
+    googleSignIn = authLayer.querySelector("#googleSignIn");
   if (!googleClientId) {
     authMessage.textContent = "Google Client IDが未設定です。";
     return;
   }
   try {
     await loadGoogleIdentity();
+    if (
+      generation !== authRenderGeneration ||
+      session ||
+      !authLayer.isConnected
+    )
+      return;
     const { nonce, hashed } = await createGoogleNonce();
+    if (
+      generation !== authRenderGeneration ||
+      session ||
+      !authLayer.isConnected
+    )
+      return;
     google.accounts.id.initialize({
       client_id: googleClientId,
       nonce: hashed,
@@ -143,6 +175,12 @@ async function renderAuth() {
       itp_support: true,
       auto_select: false,
       callback: async (response) => {
+        if (
+          generation !== authRenderGeneration ||
+          session ||
+          !authLayer.isConnected
+        )
+          return;
         authMessage.textContent = "ログイン情報を確認しています…";
         const { error } = await supabase.auth.signInWithIdToken({
           provider: "google",
@@ -153,7 +191,7 @@ async function renderAuth() {
           authMessage.textContent = `ログインできませんでした：${error.message}`;
       },
     });
-    google.accounts.id.renderButton(document.querySelector("#googleSignIn"), {
+    google.accounts.id.renderButton(googleSignIn, {
       type: "standard",
       shape: "rectangular",
       theme: "outline",
@@ -162,10 +200,12 @@ async function renderAuth() {
       logo_alignment: "left",
       width: 300,
     });
-    authMessage.textContent = "";
+    if (generation === authRenderGeneration && authLayer.isConnected)
+      authMessage.textContent = "";
   } catch (error) {
-    authMessage.textContent =
-      error.message || "Googleログインを準備できませんでした。";
+    if (generation === authRenderGeneration && authLayer.isConnected)
+      authMessage.textContent =
+        error.message || "Googleログインを準備できませんでした。";
   }
 }
 
