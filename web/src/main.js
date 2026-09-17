@@ -1194,7 +1194,9 @@ async function renderEvent(id, context) {
     if (event.genre === "exhibition")
       return renderExhibitionEvent(event, context);
     hideMessage();
-    const existing = event.event_responses?.[0],
+    const existing = event.event_responses?.find(
+      (response) => response.member_id === member.id
+    ),
       view = document.querySelector("#view");
     let cameraRemaining = 0;
     if (event.camera_enabled) {
