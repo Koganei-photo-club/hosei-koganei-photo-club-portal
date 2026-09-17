@@ -343,6 +343,17 @@ async function renderPortal(context, maintenance = null) {
       .is("deleted_at", null)
       .order("starts_at");
     if (error) throw error;
+    console.debug("[response-debug][portal]", {
+      authEmail: session?.user?.email,
+      contextMemberId: context.member?.id,
+      events: (events || []).map((event) => ({
+        eventId: event.id,
+        eventTitle: event.title,
+        responseCount: event.event_responses?.length ?? 0,
+        responseMemberIds:
+        event.event_responses?.map((response) => response.member_id) ?? [],
+      })),
+    });
     let exhibitionEntries = {};
     if (context.member) {
       const { data: entries, error: entryError } = await supabase
@@ -1165,6 +1176,21 @@ async function renderEvent(id, context) {
       .single();
     const member = context.member;
     if (error) throw error;
+    console.debug("[response-debug][event]", {
+      authEmail: session?.user?.email,
+      contextMemberId: context.member?.id,
+      eventId: event.id,
+      eventTitle: event.title,
+      responseCount: event.event_responses?.length ?? 0,
+      responses:
+      event.event_responses?.map((response, index) => ({
+        index,
+        responseId: response.id,
+        memberId: response.member_id,
+        attendance: response.attendance,
+        submittedAt: response.submitted_at,
+      })) ?? [],
+    });
     if (event.genre === "exhibition")
       return renderExhibitionEvent(event, context);
     hideMessage();
