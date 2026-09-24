@@ -355,14 +355,18 @@ async function renderPortal(context, maintenance = null) {
       })),
     });
     let exhibitionEntries = {};
+    let waitlistEntries = [], waitlistOffers = [];
     if (context.member) {
-      const { data: entries, error: entryError } = await supabase
-        .from("exhibition_entries")
-        .select(
-          "event_id,status,exhibition_works(status,orientation,print_size,publication_consent)",
-        )
-        .eq("member_id", context.member.id);
+      const [{ data: entries, error: entryError }, { data: waiting, error: waitingError }, { data: offers, error: offersError }] = await Promise.all([
+        supabase.from("exhibition_entries").select("event_id,status,exhibition_works(status,orientation,print_size,publication_consent)").eq("member_id", context.member.id),
+        supabase.from("event_waitlist_entries").select("*").eq("member_id", context.member.id).order("created_at", { ascending: false }),
+        supabase.from("event_waitlist_offers").select("*").eq("member_id", context.member.id).eq("status", "pending"),
+      ]);
       if (entryError) throw entryError;
+      if (waitingError) throw waitingError;
+      if (offersError) throw offersError;
+      waitlistEntries = waiting || [];
+      waitlistOffers = offers || [];
       exhibitionEntries = Object.fromEntries(
         (entries || []).map((entry) => [entry.event_id, entry]),
       );
@@ -372,12 +376,25 @@ async function renderPortal(context, maintenance = null) {
       membership = context.member?.membership_years?.find(
         (y) => y.fiscal_year === fiscalYear() && y.active,
       );
-    view.innerHTML = `<section class="panel"><span class="tag">MEMBER</span><h2>${esc(context.member?.name || context.email)}さん</h2>${context.member ? `<p>${esc([context.member.grade, context.member.faculty || context.member.graduate_school, context.member.department || context.member.major].filter(Boolean).join("・"))}</p><p>部員ID：${esc(context.member.member_no)}</p><p class="status">${membership ? `${fiscalYear()}年度 在籍中` : `${fiscalYear()}年度の在籍登録はありません`}</p>` : "<p>部員名簿に登録されていません。</p>"}</section><div class="section-head"><p class="eyebrow">OPEN EVENTS</p><h2>現在参加できる活動</h2></div><section id="events" class="grid"></section><div class="section-head"><p class="eyebrow">MY EXHIBITION</p><h2>写真展マイページ</h2></div><section id="archives" class="stack"></section>`;
-    const eventRoot = document.querySelector("#events");
-    if (!events?.length)
-      eventRoot.innerHTML =
-        '<div class="panel">現在参加できる活動はありません。</div>';
-    events?.forEach((event) => {
+    view.innerHTML = `<section class="panel"><span class="tag">MEMBER</span><h2>${esc(context.member?.name || context.email)}さん</h2>${context.member ? `<p>${esc([context.member.grade, context.member.faculty || context.member.graduate_school, context.member.department || context.member.major].filter(Boolean).join("・"))}</p><p>部員ID：${esc(context.member.member_no)}</p><p class="status">${membership ? `${fiscalYear()}年度 在籍中` : `${fiscalYear()}年度の在籍登録はありません`}</p>` : "<p>部員名簿に登録されていません。</p>"}</section><section id="eventSections"></section><div class="section-head"><p class="eyebrow">MY EXHIBITION</p><h2>写真展マイページ</h2></div><section id="archives" class="stack"></section>`;
+    const now = new Date(),
+      effectiveEnd = (event) => {
+        if (event.ends_at) return new Date(event.ends_at);
+        const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tokyo", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(event.starts_at)),
+          part = (type) => parts.find((item) => item.type === type).value,
+          firstDay = new Date(`${part("year")}-${part("month")}-${part("day")}T00:00:00+09:00`);
+        return new Date(firstDay.getTime() + 3 * 86400000);
+      },
+      activeEvents = (events || []).filter((event) => effectiveEnd(event) > now),
+      availabilityPairs = await Promise.all(activeEvents.filter((event) => event.genre !== "exhibition").map(async (event) => {
+        const { data } = await supabase.rpc("get_event_availability", { p_event_id: event.id });
+        return [event.id, data];
+      })),
+      availabilityByEvent = Object.fromEntries(availabilityPairs),
+      latestWaitlist = Object.fromEntries(waitlistEntries.map((entry) => [entry.event_id, entry])),
+      offerByEvent = Object.fromEntries(waitlistOffers.map((offer) => [offer.event_id, offer])),
+      categories = { action: [], joined: [], available: [], past: [] };
+    (events || []).forEach((event) => {
       const response = event.event_responses?.find(
         (r) => r.member_id === context.member?.id
       ),
@@ -402,11 +419,32 @@ async function renderPortal(context, maintenance = null) {
                 ? "出展申込を下書き保存中"
                 : entry?.status === "withdrawn"
                   ? "出展申込を取り下げ済み"
-                  : "";
-      eventRoot.insertAdjacentHTML(
-        "beforeend",
-        `<a class="card" href="#/event/${event.id}"><div><span class="tag">${eventLabel(event)}</span><h3>${esc(event.title)}</h3><p>${fmt(event.starts_at)}・${esc(event.place)}</p>${event.genre === "exhibition" && state ? `<p class="status">${state}</p>` : response ? `<p class="status">${response.cancelled_at ? "キャンセル済み" : `回答済み：${esc(response.attendance)}`}</p>` : ""}</div><strong>→</strong></a>`,
-      );
+                  : "",
+        past = effectiveEnd(event) <= now,
+        joined = response?.attendance === "参加" && !response.cancelled_at,
+        actionable = Boolean(offerByEvent[event.id]),
+        waiting = latestWaitlist[event.id]?.status === "waiting",
+        availability = availabilityByEvent[event.id],
+        full = Boolean(availability?.isFull),
+        card = { event, response, state, waiting, full };
+      if (actionable) categories.action.push(card);
+      else if (past && joined) categories.past.push(card);
+      else if (!past && joined) categories.joined.push(card);
+      else if (!past && (event.genre === "exhibition" || !response || waiting || response.cancelled_at)) categories.available.push(card);
+    });
+    categories.past.sort((a, b) => new Date(b.event.starts_at) - new Date(a.event.starts_at));
+    const cardHtml = ({ event, response, state, waiting, full }) => `<a class="card" href="#/event/${event.id}"><div><span class="tag">${eventLabel(event)}</span><h3>${esc(event.title)}</h3><p>${fmt(event.starts_at)}・${esc(event.place)}</p>${full ? '<p class="capacity-warning">定員に達しました</p>' : ""}${waiting ? '<p class="status">キャンセル待ち登録済み</p>' : event.genre === "exhibition" && state ? `<p class="status">${state}</p>` : response ? `<p class="status">${response.cancelled_at ? "キャンセル済み・再参加可能" : `回答済み：${esc(response.attendance)}`}</p>` : ""}</div><strong>→</strong></a>`;
+    const sectionRoot = document.querySelector("#eventSections"), sections = [
+      ["action", "ACTION REQUIRED", "回答が必要です"], ["joined", "JOINED EVENTS", "参加申込済みのイベント"], ["available", "AVAILABLE EVENTS", "参加可能なイベント"], ["past", "PAST EVENTS", "過去に参加したイベント"],
+    ];
+    sections.forEach(([key, eyebrow, title]) => {
+      const items = categories[key], pastClass = key === "past" ? " past-events" : "";
+      sectionRoot.insertAdjacentHTML("beforeend", `<div class="section-head"><p class="eyebrow">${eyebrow}</p><h2>${title}</h2></div><section class="grid${pastClass}" data-category="${key}">${items.length ? items.map((item, index) => `<div class="event-card-wrap${key === "past" && index >= 2 ? " hidden past-extra" : ""}">${cardHtml(item)}</div>`).join("") : `<div class="panel muted">${key === "available" ? "現在参加できる活動はありません。" : "該当する予定はありません。"}</div>`}</section>${key === "past" && items.length > 2 ? '<div class="actions"><button id="togglePastEvents" class="secondary">もっと見る</button></div>' : ""}`);
+    });
+    document.querySelector("#togglePastEvents")?.addEventListener("click", (click) => {
+      const extras = document.querySelectorAll(".past-extra"), expanding = [...extras].some((item) => item.classList.contains("hidden"));
+      extras.forEach((item) => item.classList.toggle("hidden", !expanding));
+      click.currentTarget.textContent = expanding ? "表示数を減らす" : "もっと見る";
     });
     await renderArchives(context.member?.id);
   } catch (error) {
