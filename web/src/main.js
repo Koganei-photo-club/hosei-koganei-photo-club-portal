@@ -1194,9 +1194,12 @@ async function renderEvent(id, context) {
     if (event.genre === "exhibition")
       return renderExhibitionEvent(event, context);
     hideMessage();
-    const existing = event.event_responses?.find(
-      (response) => response.member_id === member.id
-    ),
+    const { data: myState, error: stateError } = await supabase.rpc(
+      "get_my_event_state",
+      { p_event_id: id },
+    );
+    if (stateError) throw stateError;
+    const existing = myState?.response,
       view = document.querySelector("#view");
     let cameraRemaining = 0;
     if (event.camera_enabled) {
@@ -1217,13 +1220,70 @@ async function renderEvent(id, context) {
         ? "制限なし"
         : `${availability.participantCount} / ${availability.participantLimit}名（残り${availability.remaining}名）`;
     view.innerHTML = `<section class="panel"><span class="tag">${eventLabel(event)}</span><h2>${esc(event.title)}</h2><dl><dt>日時</dt><dd>${fmt(event.starts_at)}${event.ends_at ? ` 〜 ${fmt(event.ends_at)}` : ""}</dd><dt>申込締切</dt><dd>${event.registration_deadline ? fmt(event.registration_deadline) : "未設定"}</dd><dt>場所</dt><dd>${esc(event.place)}</dd><dt>連絡先</dt><dd>${esc(event.contact)}</dd><dt>参加定員</dt><dd>${esc(capacityText)}</dd><dt>対象学年</dt><dd>${gradeList.length ? esc(gradeList.join("・")) : "全学年"}</dd>${event.fee_enabled ? `<dt>費用</dt><dd>${event.fee.toLocaleString()}円</dd>` : ""}${event.payment_deadline_enabled && event.payment_deadline ? `<dt>支払期限</dt><dd>${fmt(event.payment_deadline)}</dd>` : ""}</dl><p class="copy">${esc(event.details)}</p></section><section id="response" class="panel"></section>`;
+    const { data: publishedGroups, error: groupsError } = await supabase.rpc("get_published_event_groups", { p_event_id: id });
+    if (groupsError) throw groupsError;
+    if (publishedGroups?.groups) view.insertAdjacentHTML("beforeend", `<section class="panel"><span class="tag">GROUPS</span><h2>班分け</h2><p class="muted">最終公開：${fmt(publishedGroups.publishedAt)}</p><div class="group-grid">${publishedGroups.groups.map((group) => `<article class="group-card"><h3>${esc(group.name)}</h3><ul>${group.members.map((m) => `<li class="${m.memberId === member.id ? "my-group-member" : ""}">${m.memberId === group.leaderId ? "班長：" : ""}${esc(m.name)}（${esc([m.grade, m.faculty, m.department].filter(Boolean).join("・"))}）</li>`).join("")}</ul></article>`).join("")}</div></section>`);
     const root = document.querySelector("#response");
-    if (existing) {
-      root.innerHTML = `<span class="tag">YOUR RESPONSE</span><h2>回答済みです</h2><dl><dt>回答</dt><dd class="status">${existing.cancelled_at ? "キャンセル済み" : esc(existing.attendance)}</dd><dt>回答日時</dt><dd>${fmt(existing.submitted_at)}</dd>${existing.attendance === "参加" && existing.camera ? "<dt>貸出カメラ</dt><dd>希望する</dd>" : ""}${existing.attendance === "参加" && existing.disposable_camera ? "<dt>写るんです</dt><dd>希望する</dd>" : ""}${existing.allergies ? `<dt>アレルギー</dt><dd>${esc([existing.allergies, existing.other_allergy].filter(Boolean).join("・"))}</dd>` : ""}${existing.payment_status !== "not_required" ? `<dt>支払い状況</dt><dd>${esc(paymentLabel(existing.payment_status))}</dd>` : ""}${existing.payment_status === "cancelled" && existing.payment_updated_by === "system:payment-deadline" ? "<dt>キャンセル理由</dt><dd>支払期限超過による自動キャンセル</dd>" : ""}${existing.note ? `<dt>備考</dt><dd>${esc(existing.note)}</dd>` : ""}</dl><p>同じ予定へ複数回答することはできません。変更が必要な場合は幹部へ連絡してください。</p>`;
+    const joinWaitlist = async () => {
+      if (!confirm("キャンセル待ちに登録しますか？繰上げは保証されません。")) return;
+      const needsAllergy = event.genre === "camp" || event.subtype === "dining",
+        allergies = needsAllergy ? prompt("アレルギー情報を入力してください（ない場合は「なし」）", "なし") : "";
+      if (needsAllergy && allergies === null) return;
+      if (event.genre === "camp" && !confirm("繰上げ後の参加取消条件と支払期限を確認し、同意しますか？")) return;
+      const { error } = await supabase.rpc("join_event_waitlist", {
+        p_event_id: id,
+        p_registration_data: { lineName: member.line_name || "", allergies, agreement: event.genre === "camp" },
+      });
+      if (error) return failure(error);
+      renderEvent(id);
+    };
+    if (myState?.offer) {
+      root.innerHTML = `<span class="tag">ACTION REQUIRED</span><h2>空席を仮確保しています</h2><p>回答期限：${fmt(myState.offer.response_deadline)}</p><p>期限までに参加可否を回答してください。</p><div class="actions"><button id="declineOffer" class="danger">辞退する</button><button id="acceptOffer">参加する</button></div>`;
+      const respond = async (accept) => {
+        if (!confirm(accept ? "繰上げ参加を確定しますか？" : "繰上げを辞退しますか？")) return;
+        const { error } = await supabase.rpc("respond_waitlist_offer", { p_offer_id: myState.offer.id, p_accept: accept });
+        if (error) return failure(error);
+        renderEvent(id);
+      };
+      root.querySelector("#acceptOffer").onclick = () => respond(true);
+      root.querySelector("#declineOffer").onclick = () => respond(false);
       return;
     }
-    if (!availability.registrationOpen) {
+    if (myState?.waitlist?.status === "waiting") {
+      root.innerHTML = `<span class="tag">WAITLIST</span><h2>キャンセル待ち登録済み</h2><p>登録順に案内します。繰上げは保証されません。案内は当面、幹部から個別に行います。</p><div class="actions"><button id="withdrawWaitlist" class="danger">キャンセル待ちを取り消す</button></div>`;
+      root.querySelector("#withdrawWaitlist").onclick = async () => {
+        if (!confirm("キャンセル待ちを取り消しますか？再登録時は最後尾になります。")) return;
+        const { error } = await supabase.rpc("withdraw_event_waitlist", { p_event_id: id });
+        if (error) return failure(error);
+        renderEvent(id);
+      };
+      return;
+    }
+    if (existing) {
+      const canCancel = !existing.cancelled_at && existing.attendance === "参加" && event.self_cancellation_enabled && event.registration_deadline && new Date() <= new Date(event.registration_deadline);
+      const canRejoin = existing.cancelled_at && existing.payment_updated_by !== "system:payment-deadline" && event.waitlist_registration_deadline && new Date() <= new Date(event.waitlist_registration_deadline);
+      root.innerHTML = `<span class="tag">YOUR RESPONSE</span><h2>回答済みです</h2><dl><dt>回答</dt><dd class="status">${existing.cancelled_at ? "キャンセル済み" : esc(existing.attendance)}</dd><dt>回答日時</dt><dd>${fmt(existing.submitted_at)}</dd>${existing.attendance === "参加" && existing.camera ? "<dt>貸出カメラ</dt><dd>希望する</dd>" : ""}${existing.attendance === "参加" && existing.disposable_camera ? "<dt>写るんです</dt><dd>希望する</dd>" : ""}${existing.allergies ? `<dt>アレルギー</dt><dd>${esc([existing.allergies, existing.other_allergy].filter(Boolean).join("・"))}</dd>` : ""}${existing.payment_status !== "not_required" ? `<dt>支払い状況</dt><dd>${esc(paymentLabel(existing.payment_status))}</dd>` : ""}${existing.individual_payment_deadline ? `<dt>個別支払期限</dt><dd>${fmt(existing.individual_payment_deadline)}</dd>` : ""}${existing.note ? `<dt>備考</dt><dd>${esc(existing.note)}</dd>` : ""}</dl>${canCancel ? '<div class="notice">キャンセルした枠は直ちにキャンセル待ちの方へ割り当てられる場合があり、再参加は保証されません。</div><div class="actions"><button id="cancelParticipation" class="danger">参加をキャンセル</button></div>' : ""}${canRejoin ? '<div class="actions"><button id="rejoinParticipation">再参加を希望する</button></div>' : ""}${existing.cancelled_at && existing.payment_updated_by === "system:payment-deadline" ? '<p class="notice error">支払期限超過によるキャンセル後の再参加は、幹部へご連絡ください。</p>' : ""}`;
+      if (canCancel) root.querySelector("#cancelParticipation").onclick = async () => {
+        if (!confirm("参加をキャンセルしますか？この操作後に同じ枠へ戻れる保証はありません。")) return;
+        const { error } = await supabase.rpc("cancel_my_event_participation", { p_event_id: id });
+        if (error) return failure(error);
+        renderEvent(id);
+      };
+      if (canRejoin) root.querySelector("#rejoinParticipation").onclick = async () => {
+        if (!confirm("再参加を希望しますか？満員の場合はキャンセル待ちの最後尾に登録されます。")) return;
+        const { error } = await supabase.rpc("request_event_rejoin", { p_event_id: id });
+        if (error) return failure(error);
+        renderEvent(id);
+      };
+      return;
+    }
+    if (!availability.registrationOpen && !availability.canJoinWaitlist) {
       root.innerHTML = '<span class="tag">CLOSED</span><h2>申込受付は終了しました</h2><p>締切後の回答は受け付けていません。必要な場合は企画幹部へお問い合わせください。</p>';
+      return;
+    }
+    if (!availability.registrationOpen && availability.canJoinWaitlist) {
+      root.innerHTML = '<span class="tag">WAITLIST</span><h2>通常申込は終了しました</h2><p>キャンセル待ちは引き続き受け付けています。繰上げは保証されません。</p><div class="actions"><button id="joinWaitlist">キャンセル待ちに登録</button></div>';
+      root.querySelector("#joinWaitlist").onclick = joinWaitlist;
       return;
     }
     const allergyFields =
@@ -1235,7 +1295,8 @@ async function renderEvent(id, context) {
       : availability.participantLimit != null && availability.remaining === 0
         ? "この予定は定員に達しています。不参加の回答は送信できます。"
         : "";
-    root.innerHTML = `<h2>出欠を回答</h2>${restrictionMessage ? `<div class="notice error">${esc(restrictionMessage)}</div>` : ""}<form id="responseForm" class="stack"><section class="member-summary"><strong>${esc(member.name)}さん</strong><span>${esc([member.grade, member.faculty || member.graduate_school, member.department || member.major].filter(Boolean).join("・"))}</span></section><fieldset><legend>出欠</legend><label><input type="radio" name="attendance" value="参加" required ${availability.canParticipate ? "" : "disabled"}>参加</label><label><input type="radio" name="attendance" value="不参加" required>不参加</label></fieldset><label>LINEの名前<input name="line_name" value="${esc(member?.line_name || "")}" required></label><div id="joinFields" class="stack hidden">${allergyFields}${event.camera_enabled ? `<label><input type="checkbox" name="camera" ${cameraRemaining === 0 ? "disabled" : ""}>貸出カメラを希望（残り ${cameraRemaining}台）</label>` : ""}${event.disposable_enabled ? '<label><input type="checkbox" name="disposable_camera">写るんですを希望</label>' : ""}${event.genre === "camp" ? '<div class="notice agreement"><p>本申込みの送信後は、疾病その他やむを得ない事情を除き、参加者都合による取消しは原則として認められません。また、支払期限までに費用全額の入金が確認できない場合、申込みは通知なく自動的に取り消されます。</p><label><input type="checkbox" name="agreement" required>上記条件を確認し、同意します</label></div>' : ""}</div><label>備考<textarea name="note" rows="4"></textarea></label><div class="actions"><button>この内容で回答</button></div></form>`;
+    const canWaitlist = availability.canJoinWaitlist;
+    root.innerHTML = `<h2>出欠を回答</h2>${restrictionMessage ? `<div class="notice error">${esc(restrictionMessage)}</div>` : ""}${canWaitlist ? '<div class="actions"><button id="joinWaitlist" type="button">キャンセル待ちに登録</button></div>' : ""}<form id="responseForm" class="stack"><section class="member-summary"><strong>${esc(member.name)}さん</strong><span>${esc([member.grade, member.faculty || member.graduate_school, member.department || member.major].filter(Boolean).join("・"))}</span></section><fieldset><legend>出欠</legend><label><input type="radio" name="attendance" value="参加" required ${availability.canParticipate ? "" : "disabled"}>参加</label><label><input type="radio" name="attendance" value="不参加" required>不参加</label></fieldset><label>LINEの名前<input name="line_name" value="${esc(member?.line_name || "")}" required></label><div id="joinFields" class="stack hidden">${allergyFields}${event.camera_enabled ? `<label><input type="checkbox" name="camera" ${cameraRemaining === 0 ? "disabled" : ""}>貸出カメラを希望（残り ${cameraRemaining}台）</label>` : ""}${event.disposable_enabled ? '<label><input type="checkbox" name="disposable_camera">写るんですを希望</label>' : ""}${event.genre === "camp" ? '<div class="notice agreement"><p>本申込みの送信後は、疾病その他やむを得ない事情を除き、参加者都合による取消しは原則として認められません。また、支払期限までに費用全額の入金が確認できない場合、申込みは通知なく自動的に取り消されます。</p><label><input type="checkbox" name="agreement" required>上記条件を確認し、同意します</label></div>' : ""}</div><label>備考<textarea name="note" rows="4"></textarea></label><div class="actions"><button>この内容で回答</button></div></form>`;
     const form = document.querySelector("#responseForm"),
       join = document.querySelector("#joinFields");
     form.querySelectorAll("[name=attendance]").forEach(
@@ -1260,23 +1321,14 @@ async function renderEvent(id, context) {
         button = form.querySelector("button");
       button.disabled = true;
       const attendance = values.attendance;
-      const { error: insertError } = await supabase
-        .from("event_responses")
-        .insert({
-          event_id: id,
-          member_id: member.id,
-          line_name: values.line_name,
-          attendance,
-          camera: attendance === "参加" && values.camera === "on",
-          disposable_camera:
-            attendance === "参加" && values.disposable_camera === "on",
-          allergies: attendance === "参加" ? values.allergies || "" : "",
-          other_allergy:
-            attendance === "参加" ? values.other_allergy || "" : "",
-          note: values.note || "",
-          agreement: attendance === "参加" && values.agreement === "on",
-          payment_status: "not_required",
-        });
+      const { error: insertError } = await supabase.rpc("submit_event_response", {
+        p_event_id: id, p_attendance: attendance, p_line_name: values.line_name,
+        p_camera: attendance === "参加" && values.camera === "on",
+        p_disposable_camera: attendance === "参加" && values.disposable_camera === "on",
+        p_allergies: attendance === "参加" ? values.allergies || "" : "",
+        p_other_allergy: attendance === "参加" ? values.other_allergy || "" : "",
+        p_note: values.note || "", p_agreement: attendance === "参加" && values.agreement === "on",
+      });
       if (insertError) {
         button.disabled = false;
         failure(insertError);
@@ -1284,6 +1336,7 @@ async function renderEvent(id, context) {
       }
       renderEvent(id);
     };
+    root.querySelector("#joinWaitlist")?.addEventListener("click", joinWaitlist);
   } catch (error) {
     failure(error);
   }
@@ -1584,18 +1637,16 @@ async function renderParticipants(event) {
   root.classList.remove("hidden");
   root.innerHTML = "<p>参加者情報を読み込んでいます…</p>";
   root.scrollIntoView({ behavior: "smooth" });
-  const { data: responses, error } = await supabase
-    .from("event_responses")
-    .select(
-      "*,members(member_no,name,email,grade,faculty,department,graduate_school,major)",
-    )
-    .eq("event_id", event.id)
-    .order("submitted_at");
+  const [{ data: responses, error }, { data: offers, error: offersError }] = await Promise.all([
+    supabase.from("event_responses").select("*,members(id,member_no,name,email,grade,gender,faculty,department,graduate_school,major)").eq("event_id", event.id).order("submitted_at"),
+    supabase.from("event_waitlist_offers").select("*,members(name,email)").eq("event_id", event.id).eq("status", "pending").order("offered_at"),
+  ]);
   if (error) {
     failure(error);
     root.classList.add("hidden");
     return;
   }
+  if (offersError) return failure(offersError);
   const joined = responses.filter(
       (response) => response.attendance === "参加" && !response.cancelled_at,
     ).length,
@@ -1605,7 +1656,14 @@ async function renderParticipants(event) {
     unpaid = responses.filter(
       (response) => response.payment_status === "unpaid",
     ).length;
-  root.innerHTML = `<div class="entry-heading"><div><span class="tag">PARTICIPANTS</span><h2>${esc(event.title)}｜参加者・支払い管理</h2></div><div class="actions admin-work-actions"><button id="exportParticipants" class="secondary" ${responses.length ? "" : "disabled"}>参加者CSVを出力</button></div></div><div class="summary-strip"><span>回答 ${responses.length}名</span><span>参加 ${joined}名</span>${event.fee_enabled && event.fee > 0 ? `<span>支払い済み ${paid}名</span><span>未払い ${unpaid}名</span>` : ""}</div><div id="participantList" class="participant-list"></div>`;
+  root.innerHTML = `<div class="entry-heading"><div><span class="tag">PARTICIPANTS</span><h2>${esc(event.title)}｜参加者・支払い管理</h2></div><div class="actions admin-work-actions"><button id="exportParticipants" class="secondary" ${responses.length ? "" : "disabled"}>参加者CSVを出力</button></div></div><div class="summary-strip"><span>回答 ${responses.length}名</span><span>参加 ${joined}名</span><span>仮確保 ${offers.length}名</span>${event.fee_enabled && event.fee > 0 ? `<span>支払い済み ${paid}名</span><span>未払い ${unpaid}名</span>` : ""}</div><section id="manualNotifications" class="manual-notifications"></section><div id="participantList" class="participant-list"></div><section id="groupManager" class="group-manager"></section>`;
+  const notificationRoot = root.querySelector("#manualNotifications");
+  notificationRoot.innerHTML = offers.length ? `<h3>手動通知が必要な繰上げ案内</h3>${offers.map((offer) => `<article class="notice" data-offer="${offer.id}"><strong>${esc(offer.members?.name || "部員")}さん</strong><p>${esc(offer.members?.email || "")}／回答期限 ${fmt(offer.response_deadline)}</p><div class="actions"><button class="secondary copy-offer">連絡文をコピー</button><button class="notified" ${offer.notification_status === "manual_done" ? "disabled" : ""}>${offer.notification_status === "manual_done" ? "通知済み" : "通知済みにする"}</button></div></article>`).join("")}` : "";
+  notificationRoot.querySelectorAll("article").forEach((item) => {
+    const offer = offers.find((value) => value.id === item.dataset.offer);
+    item.querySelector(".copy-offer").onclick = () => copyText(`${offer.members?.name || ""}さん\n「${event.title}」に空席が発生したため、1枠を仮確保しています。\n回答期限：${fmt(offer.response_deadline)}\n期限までに活動ポータルから「参加する」または「辞退する」を選択してください。`);
+    item.querySelector(".notified").onclick = async () => { const { error } = await supabase.rpc("mark_waitlist_offer_notified", { p_offer_id: offer.id }); if (error) return failure(error); renderParticipants(event); };
+  });
   root.querySelector("#exportParticipants").onclick = () => {
     const headers = [
         "MemberId",
@@ -1659,7 +1717,7 @@ async function renderParticipants(event) {
   const list = root.querySelector("#participantList");
   if (!responses.length) {
     list.innerHTML = '<p class="muted">回答はまだありません。</p>';
-    return;
+    return renderGroupManager(event, [], root.querySelector("#groupManager"));
   }
   responses.forEach((response) => {
     const member = response.members || {},
@@ -1674,7 +1732,7 @@ async function renderParticipants(event) {
         .join("・");
     list.insertAdjacentHTML(
       "beforeend",
-      `<article class="participant-row" data-id="${response.id}"><div><strong>${esc(member.name || "部員情報なし")}</strong><p>${esc(member.member_no || "")} ${esc(affiliation)}</p><p class="muted">${esc(member.email || "")}／回答 ${fmt(response.submitted_at)}</p></div><div><span class="status">${response.cancelled_at ? "キャンセル済み" : esc(response.attendance)}</span></div><div>${paymentTarget ? `<label>支払い状況<select class="payment-status"><option value="unpaid" ${response.payment_status === "unpaid" ? "selected" : ""}>未払い</option><option value="paid" ${response.payment_status === "paid" ? "selected" : ""}>支払い済み</option><option value="cancelled" ${response.payment_status === "cancelled" ? "selected" : ""}>キャンセル</option></select></label>${response.payment_updated_at ? `<small class="muted">${fmt(response.payment_updated_at)}<br>${esc(response.payment_updated_by)}</small>` : ""}` : '<span class="muted">支払い対象外</span>'}</div></article>`,
+      `<article class="participant-row" data-id="${response.id}"><div><strong>${esc(member.name || "部員情報なし")}</strong><p>${esc(member.member_no || "")} ${esc(affiliation)}</p><p class="muted">${esc(member.email || "")}／回答 ${fmt(response.submitted_at)}</p></div><div><span class="status">${response.cancelled_at ? "キャンセル済み" : esc(response.attendance)}</span></div><div>${paymentTarget ? `<label>支払い状況<select class="payment-status"><option value="unpaid" ${response.payment_status === "unpaid" ? "selected" : ""}>未払い</option><option value="paid" ${response.payment_status === "paid" ? "selected" : ""}>支払い済み</option></select></label>${response.payment_updated_at ? `<small class="muted">${fmt(response.payment_updated_at)}<br>${esc(response.payment_updated_by)}</small>` : ""}` : '<span class="muted">支払い対象外</span>'}${response.attendance === "参加" && !response.cancelled_at ? '<button class="danger admin-cancel">参加取消</button>' : ""}</div></article>`,
     );
   });
   list.querySelectorAll(".payment-status").forEach((select) => {
@@ -1702,6 +1760,69 @@ async function renderParticipants(event) {
       renderParticipants(event);
     };
   });
+  list.querySelectorAll(".admin-cancel").forEach((button) => button.onclick = async () => {
+    const row = button.closest(".participant-row"), reason = prompt("取消理由（任意）", "");
+    if (reason === null) return;
+    const { error } = await supabase.rpc("admin_cancel_event_participation", { p_response_id: row.dataset.id, p_reason: reason });
+    if (error) return failure(error);
+    renderParticipants(event);
+  });
+  await renderGroupManager(event, responses.filter((r) => r.attendance === "参加" && !r.cancelled_at), root.querySelector("#groupManager"));
+}
+
+async function renderGroupManager(event, participants, root) {
+  if (event.genre === "exhibition") return;
+  let workspace = [];
+  const draw = () => {
+    const cards = workspace.map((group, index) => `<article class="group-card"><h4>${index + 1}班</h4><label>班長<select data-leader="${index}"><option value="">未設定</option>${group.members.map((m) => `<option value="${m.memberId}" ${group.leaderId === m.memberId ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select></label><ul>${group.members.map((m) => `<li>${esc(m.name)}（${esc(m.grade)}）<select aria-label="${esc(m.name)}さんの移動先" data-move-from="${index}" data-member="${m.memberId}">${workspace.map((_, target) => `<option value="${target}" ${target === index ? "selected" : ""}>${target + 1}班</option>`).join("")}</select></li>`).join("")}</ul></article>`).join("");
+    root.querySelector("#groupWorkspace").innerHTML = cards;
+    root.querySelectorAll("[data-leader]").forEach((select) => select.onchange = () => workspace[Number(select.dataset.leader)].leaderId = select.value || null);
+    root.querySelectorAll("[data-move-from]").forEach((select) => select.onchange = () => {
+      const from = Number(select.dataset.moveFrom), to = Number(select.value), source = workspace[from], memberIndex = source.members.findIndex((m) => m.memberId === select.dataset.member);
+      if (from === to || memberIndex < 0) return;
+      const [member] = source.members.splice(memberIndex, 1);
+      if (source.leaderId === member.memberId) source.leaderId = null;
+      workspace[to].members.push(member);
+      draw();
+    });
+  };
+  root.innerHTML = `<div class="section-head compact"><p class="eyebrow">GROUPING</p><h3>班分け</h3><p id="groupStatus" class="muted"></p></div><p class="muted">写真展以外の正式参加者だけが対象です。公開には各班の班長設定が必要です。</p><div class="inline-field"><label>班数<input id="groupCount" type="number" min="1" max="${Math.max(1, participants.length)}" value="${Math.min(3, Math.max(1, participants.length))}"></label><button id="generateGroups">自動生成</button></div><div id="groupWorkspace" class="group-grid"></div><div class="actions"><button id="unpublishGroups" class="danger hidden">非公開にする</button><button id="draftGroups" class="secondary" disabled>一時保存</button><button id="saveGroups" disabled>保存</button><button id="publishGroups" disabled>保存して公開</button></div>`;
+  root.querySelector("#generateGroups").onclick = () => {
+    const count = Number(root.querySelector("#groupCount").value);
+    if (!participants.length || count < 1 || count > participants.length) return failure("参加者数以内の班数を指定してください。");
+    const members = participants.map((r) => ({ memberId: r.member_id, name: r.members.name, grade: r.members.grade, gender: r.members.gender || "", faculty: r.members.faculty || "", department: r.members.department || "" }))
+      .sort((a, b) => a.gender.localeCompare(b.gender) || a.faculty.localeCompare(b.faculty) || Math.random() - .5);
+    workspace = Array.from({ length: count }, (_, i) => ({ name: `${i + 1}班`, leaderId: null, members: [] }));
+    members.forEach((member, index) => workspace[index % count].members.push(member));
+    const leaderOrder = (m) => m.grade === "B3" ? 0 : m.grade === "B4" ? 1 : m.grade === "B2" ? 2 : 9;
+    workspace.forEach((group) => { group.members.sort((a, b) => leaderOrder(a) - leaderOrder(b)); group.leaderId = group.members[0]?.memberId || null; });
+    draw(); root.querySelectorAll("#draftGroups,#saveGroups,#publishGroups").forEach((b) => b.disabled = false);
+  };
+  const save = async (type, publish) => {
+    const { data, error } = await supabase.rpc("save_event_group_version", { p_event_id: event.id, p_save_type: type, p_groups: workspace });
+    if (error) return failure(error);
+    if (publish) { const result = await supabase.rpc("publish_event_group_version", { p_version_id: data.versionId }); if (result.error) return failure(result.error); }
+    message(publish ? `班分けv${data.versionNumber}を公開しました。` : `班分けv${data.versionNumber}を保存しました。`);
+  };
+  root.querySelector("#draftGroups").onclick = () => save("draft", false);
+  root.querySelector("#saveGroups").onclick = () => save("saved", false);
+  root.querySelector("#publishGroups").onclick = () => save("saved", true);
+  const { data: assignment, error: assignmentError } = await supabase.from("event_group_assignments").select("*").eq("event_id", event.id).maybeSingle();
+  if (assignmentError) return failure(assignmentError);
+  if (assignment?.current_version_id) {
+    const { data: version, error } = await supabase.from("event_group_versions").select("*").eq("id", assignment.current_version_id).single();
+    if (error) return failure(error);
+    workspace = version.groups || [];
+    root.querySelector("#groupCount").value = version.group_count;
+    root.querySelector("#groupStatus").textContent = `最新保存版 v${version.version_number}（${version.save_type === "saved" ? "保存済み" : "下書き"}）${assignment.is_published ? "／公開中" : ""}`;
+    draw();
+    root.querySelectorAll("#draftGroups,#saveGroups,#publishGroups").forEach((b) => b.disabled = false);
+  }
+  if (assignment?.is_published) {
+    const button = root.querySelector("#unpublishGroups");
+    button.classList.remove("hidden");
+    button.onclick = async () => { if (!confirm("公開中の班分けを非公開にしますか？")) return; const { error } = await supabase.rpc("unpublish_event_groups", { p_event_id: event.id }); if (error) return failure(error); renderParticipants(event); };
+  }
 }
 
 async function copyText(text) {
@@ -2582,6 +2703,7 @@ function renderEditor(event, initialGenre = "meeting") {
     <label>場所<input name="place" value="${esc(event?.place || "")}"></label><label>企画幹部の連絡先<input name="contact" value="${esc(event?.contact || "")}"></label>
     <label class="full">必要事項<textarea name="details" rows="4">${esc(event?.details || "")}</textarea></label>
     <section id="participationLimitFields" class="full conditional-fields"><h3>参加条件（任意）</h3><label><input type="checkbox" name="participant_limit_enabled">参加人数に上限を設ける</label><label id="participantLimitInput" class="hidden">参加上限人数<input type="number" name="participant_limit" min="1" step="1"></label><fieldset><legend>参加可能学年</legend><p class="muted">何も選択しない場合は全学年が対象です。</p><div class="grade-options">${["B1", "B2", "B3", "B4", "M1", "M2", "D1", "D2", "D3"].map((grade) => `<label><input type="checkbox" name="eligible_grades" value="${grade}">${grade}</label>`).join("")}</div></fieldset></section>
+    <section id="cancellationFields" class="full conditional-fields"><h3>キャンセル・キャンセル待ち</h3><label><input type="checkbox" name="self_cancellation_enabled">申込締切まで本人キャンセルを許可</label><label><input type="checkbox" name="waitlist_enabled">定員到達後にキャンセル待ちを受け付ける</label><div id="waitlistDeadlineFields" class="form-grid nested-fields"><label>キャンセル待ち受付期限<input type="datetime-local" name="waitlist_registration_deadline"></label><label>新規繰上げ期限<input type="datetime-local" name="waitlist_promotion_deadline"></label><label>繰上げ回答最終期限<input type="datetime-local" name="waitlist_response_final_deadline"></label><label>回答猶予（時間）<input type="number" name="waitlist_response_hours" min="1" max="168" value="24"></label></div></section>
     <section id="shootingFields" class="full conditional-fields"><label><input type="checkbox" name="camera_enabled">貸出カメラを受付（上限3台）</label><label><input type="checkbox" name="disposable_enabled">写るんですを受付</label></section>
     <section id="feeFields" class="full conditional-fields"><label><input type="checkbox" name="fee_enabled">費用を表示する</label><div id="feeAmountFields" class="form-grid nested-fields hidden"><label>費用<input type="number" name="fee" min="0"></label><label><input type="checkbox" name="payment_deadline_enabled">支払期限を表示する</label><label id="paymentDeadlineField" class="hidden">支払期限<input type="datetime-local" name="payment_deadline"></label></div></section>
     <section id="exhibitionFields" class="full form-grid conditional-fields">
@@ -2614,6 +2736,10 @@ function renderEditor(event, initialGenre = "meeting") {
   form.starts_at.value = local(event?.starts_at);
   form.ends_at.value = local(event?.ends_at);
   form.registration_deadline.value = local(event?.registration_deadline);
+  form.waitlist_registration_deadline.value = local(event?.waitlist_registration_deadline);
+  form.waitlist_promotion_deadline.value = local(event?.waitlist_promotion_deadline);
+  form.waitlist_response_final_deadline.value = local(event?.waitlist_response_final_deadline);
+  form.waitlist_response_hours.value = event?.waitlist_response_hours || 24;
   form.payment_deadline.value = local(event?.payment_deadline);
   form.survey_opens_at.value = local(event?.survey_opens_at);
   form.survey_closes_at.value = local(event?.survey_closes_at);
@@ -2643,6 +2769,8 @@ function renderEditor(event, initialGenre = "meeting") {
   form.survey_enabled.checked = Boolean(event?.survey_enabled);
   form.participant_limit_enabled.checked = event?.participant_limit != null;
   form.participant_limit.value = event?.participant_limit || "";
+  form.self_cancellation_enabled.checked = event?.self_cancellation_enabled ?? true;
+  form.waitlist_enabled.checked = event?.waitlist_enabled ?? true;
   for (const checkbox of form.querySelectorAll("[name=eligible_grades]"))
     checkbox.checked = (event?.eligible_grades || []).includes(checkbox.value);
   form.shift_slots_text.value = (event?.shift_slots || [])
@@ -2691,6 +2819,9 @@ function renderEditor(event, initialGenre = "meeting") {
           "hidden",
           genre === "exhibition" || !form.participant_limit_enabled.checked,
         );
+      const waitlistActive = genre !== "exhibition" && form.participant_limit_enabled.checked && form.waitlist_enabled.checked;
+      document.querySelector("#cancellationFields").classList.toggle("hidden", genre === "exhibition");
+      document.querySelector("#waitlistDeadlineFields").classList.toggle("hidden", !waitlistActive);
     };
   const snapshot = () =>
       JSON.stringify({
@@ -2822,6 +2953,12 @@ function renderEditor(event, initialGenre = "meeting") {
                   (checkbox) => checkbox.value,
                 )
               : [],
+          self_cancellation_enabled: values.genre !== "exhibition" && form.self_cancellation_enabled.checked,
+          waitlist_enabled: values.genre !== "exhibition" && form.participant_limit_enabled.checked && form.waitlist_enabled.checked,
+          waitlist_registration_deadline: values.genre !== "exhibition" && form.participant_limit_enabled.checked && form.waitlist_enabled.checked ? asIso(values.waitlist_registration_deadline) : null,
+          waitlist_promotion_deadline: values.genre !== "exhibition" && form.participant_limit_enabled.checked && form.waitlist_enabled.checked ? asIso(values.waitlist_promotion_deadline) : null,
+          waitlist_response_final_deadline: values.genre !== "exhibition" && form.participant_limit_enabled.checked && form.waitlist_enabled.checked ? asIso(values.waitlist_response_final_deadline) : null,
+          waitlist_response_hours: Number(values.waitlist_response_hours || 24),
           fee_enabled: feeEnabled,
           fee: feeEnabled ? Number(values.fee || 0) : 0,
           payment_deadline_enabled: deadlineEnabled,
