@@ -438,13 +438,13 @@ async function renderPortal(context, maintenance = null) {
       ["action", "ACTION REQUIRED", "回答が必要です"], ["joined", "JOINED EVENTS", "参加申込済みのイベント"], ["available", "AVAILABLE EVENTS", "参加可能なイベント"], ["past", "PAST EVENTS", "過去に参加したイベント"],
     ];
     sections.forEach(([key, eyebrow, title]) => {
-      const items = categories[key], pastClass = key === "past" ? " past-events" : "";
-      sectionRoot.insertAdjacentHTML("beforeend", `<div class="section-head"><p class="eyebrow">${eyebrow}</p><h2>${title}</h2></div><section class="grid${pastClass}" data-category="${key}">${items.length ? items.map((item, index) => `<div class="event-card-wrap${key === "past" && index >= 2 ? " hidden past-extra" : ""}">${cardHtml(item)}</div>`).join("") : `<div class="panel muted">${key === "available" ? "現在参加できる活動はありません。" : "該当する予定はありません。"}</div>`}</section>${key === "past" && items.length > 2 ? '<div class="actions"><button id="togglePastEvents" class="secondary">もっと見る</button></div>' : ""}`);
+      const items = categories[key];
+      sectionRoot.insertAdjacentHTML("beforeend", `<div class="section-head"><p class="eyebrow">${eyebrow}</p><h2>${title}</h2></div><section class="grid" data-category="${key}">${items.length ? items.map((item, index) => `<div class="event-card-wrap${index >= 2 ? ` hidden category-extra category-extra-${key}` : ""}">${cardHtml(item)}</div>`).join("") : `<div class="panel muted">${key === "available" ? "現在参加できる活動はありません。" : "該当する予定はありません。"}</div>`}</section>${items.length > 2 ? `<div class="actions"><button class="secondary toggle-category" data-target="${key}">もっと見る</button></div>` : ""}`);
     });
-    document.querySelector("#togglePastEvents")?.addEventListener("click", (click) => {
-      const extras = document.querySelectorAll(".past-extra"), expanding = [...extras].some((item) => item.classList.contains("hidden"));
+    document.querySelectorAll(".toggle-category").forEach((button) => button.onclick = () => {
+      const extras = document.querySelectorAll(`.category-extra-${button.dataset.target}`), expanding = [...extras].some((item) => item.classList.contains("hidden"));
       extras.forEach((item) => item.classList.toggle("hidden", !expanding));
-      click.currentTarget.textContent = expanding ? "表示数を減らす" : "もっと見る";
+      button.textContent = expanding ? "表示数を減らす" : "もっと見る";
     });
     await renderArchives(context.member?.id);
   } catch (error) {
@@ -1812,9 +1812,11 @@ async function renderGroupManager(event, participants, root) {
   if (event.genre === "exhibition") return;
   let workspace = [];
   const draw = () => {
+    const gradeOrder = { D3: 9, D2: 8, D1: 7, M2: 6, M1: 5, B4: 4, B3: 3, B2: 2, B1: 1 };
+    workspace.forEach((group) => group.members.sort((a, b) => Number(b.memberId === group.leaderId) - Number(a.memberId === group.leaderId) || (gradeOrder[b.grade] || 0) - (gradeOrder[a.grade] || 0) || a.name.localeCompare(b.name, "ja")));
     const cards = workspace.map((group, index) => `<article class="group-card"><h4>${index + 1}班</h4><label>班長<select data-leader="${index}"><option value="">未設定</option>${group.members.map((m) => `<option value="${m.memberId}" ${group.leaderId === m.memberId ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select></label><ul>${group.members.map((m) => `<li>${esc(m.name)}（${esc(m.grade)}）<select aria-label="${esc(m.name)}さんの移動先" data-move-from="${index}" data-member="${m.memberId}">${workspace.map((_, target) => `<option value="${target}" ${target === index ? "selected" : ""}>${target + 1}班</option>`).join("")}</select></li>`).join("")}</ul></article>`).join("");
     root.querySelector("#groupWorkspace").innerHTML = cards;
-    root.querySelectorAll("[data-leader]").forEach((select) => select.onchange = () => workspace[Number(select.dataset.leader)].leaderId = select.value || null);
+    root.querySelectorAll("[data-leader]").forEach((select) => select.onchange = () => { workspace[Number(select.dataset.leader)].leaderId = select.value || null; draw(); });
     root.querySelectorAll("[data-move-from]").forEach((select) => select.onchange = () => {
       const from = Number(select.dataset.moveFrom), to = Number(select.value), source = workspace[from], memberIndex = source.members.findIndex((m) => m.memberId === select.dataset.member);
       if (from === to || memberIndex < 0) return;
