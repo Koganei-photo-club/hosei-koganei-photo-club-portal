@@ -669,7 +669,7 @@ async function renderExhibitionApplicationV2(event, context) {
   try {
     if (!context.member)
       throw new Error("出展申込には部員名簿への登録が必要です。");
-    const [{ data: entry, error: entryError }, { data: agreement, error: agreementError }] =
+    const [{ data: entry, error: entryError }, { data: agreementStatus, error: agreementError }] =
       await Promise.all([
         supabase
           .from("exhibition_entries")
@@ -677,12 +677,13 @@ async function renderExhibitionApplicationV2(event, context) {
           .eq("event_id", event.id)
           .eq("member_id", context.member.id)
           .maybeSingle(),
-        supabase.rpc("get_current_exhibition_agreement", {
+        supabase.rpc("get_my_exhibition_agreement_status_v2", {
           p_event_id: event.id,
         }),
       ]);
     if (entryError) throw entryError;
     if (agreementError) throw agreementError;
+    const agreement = agreementStatus?.currentAgreement;
     if (!agreement) throw new Error("現在有効な申込同意文が設定されていません。");
 
     const now = Date.now(),
@@ -714,7 +715,22 @@ async function renderExhibitionApplicationV2(event, context) {
           : context.member.name,
       view = document.querySelector("#view");
     hideMessage();
-    view.innerHTML = `<nav class="exhibition-mypage-nav"><a href="#exhibitionOverview">概要</a><a href="#exhibitionApplication">出展</a><a href="#v2WorkManager">作品</a><a href="#v2CaptionManager">キャプション</a><a href="#exhibitionShift">シフト</a></nav><section id="exhibitionOverview" class="panel"><span class="tag">EXHIBITION MY PAGE</span><h2>${esc(event.exhibition_title || event.title)}</h2><dl><dt>開催日時</dt><dd>${fmt(event.starts_at)}${event.ends_at ? ` 〜 ${fmt(event.ends_at)}` : ""}</dd><dt>出展申込締切</dt><dd>${fmt(event.exhibition_application_deadline)}</dd><dt>作品提出締切</dt><dd>${fmt(event.exhibition_work_submission_deadline)}</dd><dt>修正期限</dt><dd>${fmt(event.exhibition_revision_deadline)}</dd><dt>キャプション締切</dt><dd>${fmt(event.exhibition_caption_deadline)}</dd><dt>場所</dt><dd>${esc(event.place)}</dd><dt>出展上限</dt><dd>1人 ${event.max_works}作品</dd></dl><p class="copy">${esc(event.details)}</p></section><section id="exhibitionApplication" class="panel exhibition-entry-panel"><div class="entry-heading"><div><span class="tag">YOUR APPLICATION</span><h2>出展申込</h2></div><span class="status">${stateLabel}</span></div><p class="muted">出展申込とシフト希望は独立しています。シフトだけ参加する場合、出展申込は不要です。</p>${autoCancelled ? '<div class="notice error">有効な作品がなくなったため申込はSYSTEMにより自動取消されました。復活が必要な場合は幹部へ連絡してください。</div>' : ""}${!applicationOpen && !active && !autoCancelled ? '<div class="notice error">出展申込受付は終了しました。</div>' : ""}${active ? '<div class="notice">出展申込は成立しています。作品は作品提出締切までに、後続の作品提出画面から登録します。</div>' : ""}${active && !workingOpen && !(entry?.revival_deadline && now < new Date(entry.revival_deadline).getTime()) ? '<div class="notice error">作品提出締切を過ぎたため、申込内容は変更できません。</div>' : ""}<form id="applicationForm" class="stack"><label>出展予定作品数<input type="number" name="planned_work_count" min="1" max="${event.max_works}" required value="${entry?.planned_work_count || 1}"><small>予定数です。最終的な提出作品数を固定するものではありません。</small></label><fieldset><legend>作者表示名</legend><label><input type="radio" name="display_name_type" value="real_name" ${initialType === "real_name" ? "checked" : ""}>本名（${esc(context.member.name)}）</label><label><input type="radio" name="display_name_type" value="pseudonym" ${initialType === "pseudonym" ? "checked" : ""}>ペンネーム</label><label id="pseudonymField" class="${initialType === "pseudonym" ? "" : "hidden"}">ペンネーム<input name="display_name_value" maxlength="100" value="${esc(initialType === "pseudonym" ? initialName : "")}"></label></fieldset><label>申込に関する備考（任意）<textarea name="note" maxlength="3000" rows="4">${esc(entry?.note || "")}</textarea></label>${active || autoCancelled ? "" : `<section class="notice agreement"><h3>Application Agreement</h3><p class="copy">${esc(agreement.content)}</p><p><strong>重要：</strong>作品提出締切時点で正式提出作品が0件の場合、申込はSYSTEMにより自動取消されます。</p><label><input type="checkbox" name="agreement_confirmed" required>同意内容と重要事項を確認し、同意します</label></section>`}<div class="actions">${active || autoCancelled ? "" : `<button type="button" id="saveApplicationDraft" class="secondary" ${canEdit ? "" : "disabled"}>下書き保存</button>`}<button type="submit" id="applicationPrimary" ${canEdit ? "" : "disabled"}>${active ? "変更を保存" : withdrawn ? "再申込内容を確認" : "申込内容を確認"}</button>${active && applicationOpen ? '<button type="button" id="withdrawApplication" class="danger">申込を取り消す</button>' : ""}</div></form><section id="applicationConfirmation" class="stack hidden"></section></section>`;
+    const lastAcceptance = agreementStatus.acceptances?.at(-1);
+    view.innerHTML = `<nav class="exhibition-mypage-nav"><a href="#exhibitionOverview">概要</a><a href="#exhibitionApplication">出展</a><a href="#v2WorkManager">作品</a><a href="#v2CaptionManager">キャプション</a><a href="#exhibitionShift">シフト</a></nav><section id="exhibitionOverview" class="panel"><span class="tag">EXHIBITION MY PAGE</span><h2>${esc(event.exhibition_title || event.title)}</h2><dl><dt>開催日時</dt><dd>${fmt(event.starts_at)}${event.ends_at ? ` 〜 ${fmt(event.ends_at)}` : ""}</dd><dt>出展申込締切</dt><dd>${fmt(event.exhibition_application_deadline)}</dd><dt>作品提出締切</dt><dd>${fmt(event.exhibition_work_submission_deadline)}</dd><dt>修正期限</dt><dd>${fmt(event.exhibition_revision_deadline)}</dd><dt>キャプション締切</dt><dd>${fmt(event.exhibition_caption_deadline)}</dd><dt>場所</dt><dd>${esc(event.place)}</dd><dt>出展上限</dt><dd>1人 ${event.max_works}作品</dd></dl><p class="copy">${esc(event.details)}</p></section><section id="exhibitionApplication" class="panel exhibition-entry-panel"><div class="entry-heading"><div><span class="tag">YOUR APPLICATION</span><h2>出展申込</h2></div><span class="status">${stateLabel}</span></div><p class="muted">出展申込とシフト希望は独立しています。シフトだけ参加する場合、出展申込は不要です。</p>${agreementStatus.agreementStale ? `<section class="notice error agreement-reagreement"><h3>写真展の出展規約が改定されました</h3><dl><dt>現在同意済み</dt><dd>${esc(lastAcceptance?.referenceKey || "確認できません")}</dd><dt>新しい規約</dt><dd>${esc(agreement.referenceKey)}</dd></dl><div class="agreement-scroll">${esc(agreement.content)}</div><label><input type="checkbox" id="reagreementConfirmed">新しい規約全文を確認し、再同意します</label><div class="actions"><button type="button" id="reagreeApplication">新しい規約に再同意</button></div></section>` : ""}${autoCancelled ? '<div class="notice error">有効な作品がなくなったため申込はSYSTEMにより自動取消されました。復活が必要な場合は幹部へ連絡してください。</div>' : ""}${!applicationOpen && !active && !autoCancelled ? '<div class="notice error">出展申込受付は終了しました。</div>' : ""}${active ? '<div class="notice">出展申込は成立しています。作品は作品提出締切までに、後続の作品提出画面から登録します。</div>' : ""}${active && !workingOpen && !(entry?.revival_deadline && now < new Date(entry.revival_deadline).getTime()) ? '<div class="notice error">作品提出締切を過ぎたため、申込内容は変更できません。</div>' : ""}<form id="applicationForm" class="stack"><label>出展予定作品数<input type="number" name="planned_work_count" min="1" max="${event.max_works}" required value="${entry?.planned_work_count || 1}"><small>予定数です。最終的な提出作品数を固定するものではありません。</small></label><fieldset><legend>作者表示名</legend><label><input type="radio" name="display_name_type" value="real_name" ${initialType === "real_name" ? "checked" : ""}>本名（${esc(context.member.name)}）</label><label><input type="radio" name="display_name_type" value="pseudonym" ${initialType === "pseudonym" ? "checked" : ""}>ペンネーム</label><label id="pseudonymField" class="${initialType === "pseudonym" ? "" : "hidden"}">ペンネーム<input name="display_name_value" maxlength="100" value="${esc(initialType === "pseudonym" ? initialName : "")}"></label></fieldset><label>申込に関する備考（任意）<textarea name="note" maxlength="3000" rows="4">${esc(entry?.note || "")}</textarea></label>${active || autoCancelled ? "" : `<section class="notice agreement"><h3>Application Agreement</h3><p class="muted">${esc(agreement.referenceKey)}／Version ${agreement.versionNo}</p><div class="agreement-scroll">${esc(agreement.content)}</div><p><strong>重要：</strong>作品提出締切時点で正式提出作品が0件の場合、申込はSYSTEMにより自動取消されます。</p><label><input type="checkbox" name="agreement_confirmed" required>同意内容と重要事項を確認し、同意します</label></section>`}<div class="actions">${active || autoCancelled ? "" : `<button type="button" id="saveApplicationDraft" class="secondary" ${canEdit ? "" : "disabled"}>下書き保存</button>`}<button type="submit" id="applicationPrimary" ${canEdit ? "" : "disabled"}>${active ? "変更を保存" : withdrawn ? "再申込内容を確認" : "申込内容を確認"}</button>${active && applicationOpen ? '<button type="button" id="withdrawApplication" class="danger">申込を取り消す</button>' : ""}</div></form><section id="applicationConfirmation" class="stack hidden"></section></section>`;
+
+    document.querySelector("#reagreeApplication")?.addEventListener("click", async () => {
+      if (!document.querySelector("#reagreementConfirmed")?.checked)
+        return failure("新しい規約全文を確認し、再同意欄にチェックしてください。");
+      if (!confirm(`${agreement.referenceKey} に再同意しますか？\n当初の同意履歴は変更されず、その後の再同意として記録されます。`)) return;
+      const { error } = await supabase.rpc("reagree_exhibition_application_v2", {
+        p_event_id: event.id,
+        p_expected_agreement_id: agreement.id,
+        p_expected_agreement_hash: agreement.contentHash,
+      });
+      if (error) return failure(error);
+      await renderExhibitionApplicationV2(event, context);
+      message("改定後の出展規約へ再同意しました。");
+    });
 
     const form = document.querySelector("#applicationForm"),
       confirmation = document.querySelector("#applicationConfirmation"),
@@ -3569,6 +3585,98 @@ function setupReceiptForm() {
   };
 }
 
+function showAgreementDialog(title, content) {
+  let dialog = document.querySelector("#agreementDialog");
+  if (!dialog) {
+    dialog = document.createElement("dialog");
+    dialog.id = "agreementDialog";
+    dialog.className = "agreement-dialog";
+    document.body.append(dialog);
+  }
+  dialog.innerHTML = `<div class="agreement-dialog-head"><h2>${esc(title)}</h2><button type="button" class="secondary close-agreement-dialog">閉じる</button></div><div class="agreement-dialog-body">${content}</div>`;
+  dialog.querySelector(".close-agreement-dialog").onclick = () => dialog.close();
+  dialog.onclick = (click) => {
+    if (click.target === dialog) dialog.close();
+  };
+  dialog.showModal();
+}
+
+async function initializeAdminAgreementManager(event) {
+  const root = document.querySelector("#adminAgreementManager");
+  if (!root || Number(event?.exhibition_workflow_version) !== 2) return;
+  const load = async () => {
+    root.innerHTML = '<p class="muted">規約情報を読み込んでいます…</p>';
+    const { data: versions, error } = await supabase.rpc(
+      "admin_get_exhibition_agreement_versions_v2",
+      { p_event_id: event.id },
+    );
+    if (error) {
+      root.innerHTML = `<div class="notice error">${esc(error.message)}</div>`;
+      return;
+    }
+    const current = versions.find((version) => version.current);
+    if (!current) {
+      root.innerHTML = '<div class="notice error">現在の規約を確認できません。</div>';
+      return;
+    }
+    root.innerHTML = `<p><strong>現在の規約：</strong>${esc(current.referenceKey)}</p><div class="actions agreement-manager-actions"><button type="button" id="viewCurrentAgreement" class="secondary">規約全文を表示</button><button type="button" id="reviseAgreement">規約を改定</button><button type="button" id="viewAgreementHistory" class="secondary">改定履歴</button></div>`;
+    root.querySelector("#viewCurrentAgreement").onclick = () =>
+      showAgreementDialog(
+        `現在の規約：${current.referenceKey}`,
+        `<dl><dt>Version</dt><dd>${current.versionNo}</dd><dt>作成日時</dt><dd>${fmt(current.createdAt)}</dd><dt>作成者</dt><dd>${esc(current.createdBy)}</dd></dl><div class="agreement-scroll">${esc(current.content)}</div>`,
+      );
+    root.querySelector("#viewAgreementHistory").onclick = () =>
+      showAgreementDialog(
+        "規約の改定履歴",
+        `<div class="agreement-history">${versions
+          .map(
+            (version) => `<article><div><span class="tag">${version.current ? "CURRENT" : "HISTORICAL"}</span><h3>${esc(version.referenceKey)}</h3></div><dl><dt>Version</dt><dd>${version.versionNo}</dd><dt>作成日時</dt><dd>${fmt(version.createdAt)}</dd><dt>作成者</dt><dd>${esc(version.createdBy)}</dd><dt>改定理由</dt><dd>${esc(version.changeReason)}</dd><dt>再同意</dt><dd>${version.requireReagreement ? "必要" : "不要"}</dd></dl><details><summary>全文を表示</summary><div class="agreement-scroll">${esc(version.content)}</div></details></article>`,
+          )
+          .join("")}</div>`,
+      );
+    root.querySelector("#reviseAgreement").onclick = () => {
+      showAgreementDialog(
+        "出展規約を改定",
+        `<form id="agreementRevisionForm" class="stack"><div class="notice">現在版 ${esc(current.referenceKey)} は変更されず、immutableな履歴として残ります。</div><label>新しい規約参照<input name="reference_key" required maxlength="200" placeholder="例：2026-gakusai-v1.1"></label><label>新しい規約本文<textarea name="content" required rows="16">${esc(current.content)}</textarea></label><label>改定理由<textarea name="reason" required maxlength="2000" rows="4"></textarea></label><label><input type="checkbox" name="require_reagreement">既存申込者への再同意を要求する</label><div class="actions"><button>確認へ進む</button></div></form>`,
+      );
+      const form = document.querySelector("#agreementRevisionForm");
+      form.onsubmit = async (submit) => {
+        submit.preventDefault();
+        const values = Object.fromEntries(new FormData(form)),
+          reference = values.reference_key.trim(),
+          content = values.content.trim(),
+          reason = values.reason.trim(),
+          requireReagreement = form.require_reagreement.checked;
+        if (!reference || !content || !reason)
+          return failure("新しい規約参照・規約本文・改定理由はすべて必須です。");
+        if (versions.some((version) => version.referenceKey === reference))
+          return failure("同じ規約参照は使用できません。");
+        if (!confirm(`規約を改定します。\n\n現在版：${current.referenceKey}\n新しい版：${reference}\n改定理由：${reason}\n再同意：${requireReagreement ? "要求する" : "要求しない"}\n\n過去版は変更されません。実行しますか？`)) return;
+        const button = form.querySelector("button");
+        button.disabled = true;
+        const { error: reviseError } = await supabase.rpc(
+          "admin_revise_exhibition_agreement_v2",
+          {
+            p_event_id: event.id,
+            p_reference_key: reference,
+            p_content: content,
+            p_reason: reason,
+            p_require_reagreement: requireReagreement,
+          },
+        );
+        if (reviseError) {
+          button.disabled = false;
+          return failure(reviseError);
+        }
+        document.querySelector("#agreementDialog")?.close();
+        await load();
+        message("新しい出展規約Versionを作成しました。過去版は保持されています。");
+      };
+    };
+  };
+  await load();
+}
+
 function renderEditor(event, initialGenre = "meeting") {
   const root = document.querySelector("#editor");
   root.classList.remove("hidden");
@@ -3587,7 +3695,7 @@ function renderEditor(event, initialGenre = "meeting") {
     <section id="exhibitionFields" class="full form-grid conditional-fields">
       <label>写真展タイトル<input name="exhibition_title"></label><label>出展可能作品数<input type="number" name="max_works" min="1"></label>
       <label>最低シフト人数<input type="number" name="min_shift_people" min="1"></label><label class="full">シフト枠（1行1枠）<textarea name="shift_slots_text" rows="5" placeholder="8月23日 15:00〜17:00"></textarea></label>
-      <fieldset id="workflowV2Fields" class="full public-site-fields"><legend>写真展 Workflow v2</legend>${Number(event?.exhibition_workflow_version) === 2 ? `<div class="notice"><strong>Workflow v2 有効</strong><p>出展申込：${fmt(event.exhibition_application_deadline)}／作品提出：${fmt(event.exhibition_work_submission_deadline)}／修正：${fmt(event.exhibition_revision_deadline)}／キャプション：${fmt(event.exhibition_caption_deadline)}</p></div>` : `<p class="muted">新しい写真展で使用します。有効化後はLegacyへ戻せません。既存の「申込締切」と、Workflow v2の出展申込締切は別項目です。</p><label class="full"><input type="checkbox" name="activate_workflow_v2">この写真展をWorkflow v2として開始する</label><div id="workflowV2ActivationFields" class="form-grid full nested-fields hidden"><label>出展申込締切<input type="datetime-local" name="exhibition_application_deadline"></label><label>作品提出締切<input type="datetime-local" name="exhibition_work_submission_deadline"></label><label>修正期限<input type="datetime-local" name="exhibition_revision_deadline"></label><label>キャプション情報締切<input type="datetime-local" name="exhibition_caption_deadline"></label><label>規約参照<input name="agreement_reference" placeholder="例：2026-summer-v1"></label><label class="full">規約本文<textarea name="agreement_content" rows="8"></textarea></label><label class="full">有効化理由<input name="activation_reason" placeholder="例：2026年度夏写真展の新規募集開始"></label><div class="notice full">4期限は「出展申込 ＜ 作品提出 ＜ 修正 ＜ キャプション」の順で、出展申込締切を含めすべて未来に設定してください。有効化は一時保存では実行されません。</div></div>`}</fieldset>
+      <fieldset id="workflowV2Fields" class="full public-site-fields"><legend>写真展 Workflow v2</legend>${Number(event?.exhibition_workflow_version) === 2 ? `<div class="notice"><strong>Workflow v2 有効</strong><p>出展申込：${fmt(event.exhibition_application_deadline)}／作品提出：${fmt(event.exhibition_work_submission_deadline)}／修正：${fmt(event.exhibition_revision_deadline)}／キャプション：${fmt(event.exhibition_caption_deadline)}</p><div id="adminAgreementManager" class="agreement-manager"><p class="muted">規約情報を読み込んでいます…</p></div></div>` : `<p class="muted">新しい写真展で使用します。有効化後はLegacyへ戻せません。既存の「申込締切」と、Workflow v2の出展申込締切は別項目です。</p><label class="full"><input type="checkbox" name="activate_workflow_v2">この写真展をWorkflow v2として開始する</label><div id="workflowV2ActivationFields" class="form-grid full nested-fields hidden"><label>出展申込締切<input type="datetime-local" name="exhibition_application_deadline"></label><label>作品提出締切<input type="datetime-local" name="exhibition_work_submission_deadline"></label><label>修正期限<input type="datetime-local" name="exhibition_revision_deadline"></label><label>キャプション情報締切<input type="datetime-local" name="exhibition_caption_deadline"></label><label>規約参照<input name="agreement_reference" placeholder="例：2026-summer-v1"></label><label class="full">規約本文<textarea name="agreement_content" rows="8"></textarea></label><label class="full">有効化理由<input name="activation_reason" placeholder="例：2026年度夏写真展の新規募集開始"></label><div class="notice full">4期限は「出展申込 ＜ 作品提出 ＜ 修正 ＜ キャプション」の順で、出展申込締切を含めすべて未来に設定してください。有効化は一時保存では実行されません。</div></div>`}</fieldset>
       <fieldset class="full public-site-fields"><legend>一般向け写真展サイト</legend><p class="muted">ここで保存した内容は「写真展サイトを公開」を押すまで一般公開されません。保存し直すと安全のためサイトは下書きへ戻ります。</p><div class="form-grid">
         <label class="full">写真展キー<input name="exhibition_key" maxlength="100" placeholder="例：2026-winter"><small>半角数字・小文字・ハイフン。公開URLの識別子になります。</small></label>
         <h4 class="full language-field-heading">日本語</h4><label>サイト用タイトル<input name="site_title" maxlength="200"></label><label>サイト用会場補足（任意）<input name="site_additional_info" maxlength="3000" placeholder="例：EAST館 2階 202"></label>
@@ -3720,6 +3828,7 @@ function renderEditor(event, initialGenre = "meeting") {
       document.querySelector("#saveEvent").disabled = unchanged;
     };
   conditions();
+  initializeAdminAgreementManager(event);
   initial.value = snapshot();
   updateButtons();
   form.addEventListener("input", updateButtons);
