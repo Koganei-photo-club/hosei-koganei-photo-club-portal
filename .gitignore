@@ -3,3 +3,5 @@ web/dist/
 web/.env
 outputs/
 .DS_Store
+supabase/.temp/
+supabase/.branches/
