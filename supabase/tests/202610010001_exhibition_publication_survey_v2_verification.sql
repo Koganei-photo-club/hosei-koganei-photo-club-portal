@@ -21,11 +21,25 @@ begin
     site_title,site_title_en,site_description,site_description_en,place_en,dm_image_path,site_status,survey_enabled,survey_opens_at,survey_closes_at)
   values('saved',true,'exhibition','__phase8_v2__','Phase 8',now()+interval '10 days',now()+interval '11 days','検証会場',admin_email,
     now()+interval '1 day',3,1,'[{"id":"test","label":"test"}]'::jsonb,admin_email,venue_id,'2099-phase8',
-    '公開展','Public Exhibition','説明','Description','Venue','2099-phase8/dm.webp','draft',true,
+    '公開展','Public Exhibition','説明','Description','Venue',null,'draft',true,
     now()-interval '1 hour',now()+interval '1 hour') returning id into event_id;
   perform public.admin_activate_exhibition_workflow_v2(event_id,now()+interval '1 day',now()+interval '2 days',now()+interval '3 days',now()+interval '4 days','phase8','Agreement','検証');
   select agreement.id,agreement.content_hash into agreement_id,agreement_hash
     from public.exhibition_agreement_definitions agreement where agreement.event_id=v.event_id and agreement.active;
+
+  -- Current Publicationなしでも案内ページだけ公開でき、DM・作品・内部情報は不要。
+  if public.get_public_exhibition('2099-phase8') is not null then raise exception '下書き案内ページが公開されました。'; end if;
+  perform public.admin_publish_exhibition_guide_v2(event_id);
+  public_data:=public.get_public_exhibition('2099-phase8');
+  if public_data is null or (public_data->>'publicationAvailable')::boolean or public_data->>'dmImagePath' is not null
+    or jsonb_array_length(public_data->'works')<>0 or public_data::text like '%caption%' then
+    raise exception 'Publicationなし案内ページの公開境界が不正です。';
+  end if;
+  update public.events event set title='__phase8_v2_changed__',site_title='公開展 改' where event.id=v.event_id;
+  public_data:=public.get_public_exhibition('2099-phase8');
+  if public_data->>'eventName'<>'__phase8_v2_changed__' or public_data->>'title'<>'公開展 改' then
+    raise exception 'Publication前のタイトル変更が案内ページへ反映されません。';
+  end if;
 
   -- Application / Work / Captionは実運用と同じv2 RPC経路で構築する。
   perform set_config('request.jwt.claims',jsonb_build_object('email','__phase8_member__@example.invalid','role','authenticated')::text,true);
@@ -49,9 +63,9 @@ begin
   perform public.admin_review_exhibition_work_v2(wa,'accepted','{}','',null);
   perform public.admin_review_exhibition_work_v2(wb,'accepted','{}','',null);
   perform set_config('request.jwt.claims',jsonb_build_object('email','__phase8_member__@example.invalid','role','authenticated')::text,true);
-  perform public.save_exhibition_caption_draft_v2(a,'作者A','self','Work A','digital','','Camera A','','','provided','説明A','','none','',null,'none','');
+  perform public.save_exhibition_caption_draft_v2(a,'作者A','self','Work A','digital','','Camera A','','','provided','説明A','','request','@phase8.artist',null,'declared','星空部分を生成して追加');
   result:=public.submit_exhibition_caption_v2(a);ca:=(result->>'snapshotId')::uuid;
-  perform public.save_exhibition_caption_draft_v2(b,'作者B','self','Work B','film','','Camera B','','Film B','provided','説明B','','none','',null,'none','');
+  perform public.save_exhibition_caption_draft_v2(b,'作者B','self','Work B','film','','Camera B','','Film B','provided','説明B','','request','javascript:alert(1)',null,'none','');
   result:=public.submit_exhibition_caption_v2(b);cb:=(result->>'snapshotId')::uuid;
   perform set_config('request.jwt.claims',jsonb_build_object('email',admin_email,'role','authenticated')::text,true);
   perform public.admin_review_exhibition_caption_v2(ca,'accepted','{}','',null);
@@ -69,11 +83,19 @@ begin
   begin perform public.admin_set_exhibition_public_image_v2(a,'private/original-a');raise exception 'Public Storageにないpathを登録できました。';exception when others then if sqlerrm='Public Storageにないpathを登録できました。' then raise;end if;end;
   insert into storage.objects(bucket_id,name,metadata) values('exhibition-public',event_id::text||'/'||member_id::text||'/'||a::text||'/public.webp','{"mimetype":"image/webp"}');
   perform public.admin_set_exhibition_public_image_v2(a,event_id::text||'/'||member_id::text||'/'||a::text||'/public.webp');
+  update public.events event set dm_image_path='2099-phase8/dm.webp' where event.id=v.event_id;
   if exists(select 1 from public.admin_get_exhibition_publication_readiness_v2(export1) readiness where not readiness.ready) then raise exception 'Publication readinessが解消されません。'; end if;
   result:=public.admin_finalize_exhibition_publication_v2(export1,'P1');publication1:=(result->>'publicationVersionId')::uuid;
   if not exists(select 1 from public.exhibition_publication_versions publication where publication.id=publication1 and publication.source_export_version_id=export1 and publication.published_by=admin_email and publication.published_at is not null) then raise exception 'Publication source/publisher provenanceが不正です。'; end if;
   if not exists(select 1 from public.exhibition_publication_items item where item.publication_version_id=publication1 and item.work_id=a and item.display_no=1 and item.image_state='public_image' and item.public_image_path is not null and item.english_title_provenance='member_snapshot') then raise exception 'A公開画像・display_no・英語title provenanceが固定されません。'; end if;
   if not exists(select 1 from public.exhibition_publication_items item where item.publication_version_id=publication1 and item.work_id=b and item.display_no=2 and item.image_state='no_image' and item.public_image_path is null and item.source_export_item_id is not null and item.work_submission_snapshot_id=wb and item.caption_submission_snapshot_id=cb) then raise exception 'B NO IMAGEまたはprovenanceが不正です。'; end if;
+  if not exists(select 1 from public.exhibition_publication_items item where item.publication_version_id=publication1 and item.work_id=a
+      and item.instagram_public_url='https://www.instagram.com/phase8.artist/' and item.ai_processing_declaration='declared'
+      and item.ai_processing_details='星空部分を生成して追加')
+    or not exists(select 1 from public.exhibition_publication_items item where item.publication_version_id=publication1 and item.work_id=b
+      and item.instagram_public_url is null and item.ai_processing_declaration='none') then
+    raise exception 'Instagram URL正規化またはAI申告固定が不正です。';
+  end if;
   select jsonb_agg(to_jsonb(item) order by item.public_order) into p1_before from public.exhibition_publication_items item where item.publication_version_id=publication1;
   perform public.admin_set_current_exhibition_publication_v2(publication1,'P1公開');
   begin
@@ -83,9 +105,22 @@ begin
     if sqlerrm='Current Publication pointerを直接変更できました。' then raise; end if;
   end;
   public_data:=public.get_public_exhibition('2099-phase8');
+  if public_data->>'eventName'<>'__phase8_v2_changed__' or public_data->>'title'<>'公開展 改' then raise exception 'Publicationへタイトルが固定されていません。'; end if;
   if jsonb_array_length(public_data->'works')<>2 then raise exception 'NO IMAGE Workが公開datasetから欠落しました。'; end if;
   if (select x->>'publicImagePath' from jsonb_array_elements(public_data->'works')x where x->>'workUuid'=b::text) is not null then raise exception 'Bの画像pathが公開されました。'; end if;
   if public_data::text like '%private/original-b%' then raise exception 'Bのoriginal pathが公開されました。'; end if;
+  if not exists(select 1 from jsonb_array_elements(public_data->'works')x where x->>'workUuid'=a::text
+      and x->>'instagramUrl'='https://www.instagram.com/phase8.artist/' and x->>'aiProcessingDeclaration'='declared'
+      and x->>'aiProcessingDetails'='星空部分を生成して追加')
+    or exists(select 1 from jsonb_array_elements(public_data->'works')x where x->>'workUuid'=b::text and x->>'instagramUrl' is not null) then
+    raise exception '公開payloadのInstagramまたはAI申告が不正です。';
+  end if;
+
+  update public.events event set title='__phase8_future__',site_title='将来の展示名' where event.id=v.event_id;
+  public_data:=public.get_public_exhibition('2099-phase8');
+  if public_data->>'eventName'<>'__phase8_v2_changed__' or public_data->>'title'<>'公開展 改' then
+    raise exception 'Event変更でCurrent Publicationのタイトルが変化しました。';
+  end if;
 
   -- Current Work上の公開派生画像を変更しても、公開済みP1は再解釈されない。
   insert into storage.objects(bucket_id,name,metadata) values('exhibition-public',event_id::text||'/'||member_id::text||'/'||a::text||'/public-v2.webp','{"mimetype":"image/webp"}');
@@ -110,6 +145,8 @@ begin
   perform public.admin_set_current_exhibition_publication_v2(publication2,'P2公開');
   if exists(select 1 from public.admin_get_exhibition_publication_actions_v2(event_id)) then raise exception 'Current切替後もPublication Actionが残っています。'; end if;
   if (select event.current_publication_version_id from public.events event where event.id=v.event_id)<>publication2 then raise exception 'Current pointerがP2ではありません。'; end if;
+  if (public.get_public_exhibition('2099-phase8')->>'eventName')<>'__phase8_future__'
+    or (public.get_public_exhibition('2099-phase8')->>'title')<>'将来の展示名' then raise exception 'Publication v2の新タイトルへ切り替わりません。'; end if;
   if (select jsonb_agg(to_jsonb(item) order by item.public_order) from public.exhibition_publication_items item where item.publication_version_id=publication1) is distinct from p1_before then raise exception 'P2作成でP1が変化しました。'; end if;
   if (select response.publication_version_id from public.exhibition_survey_responses response where response.id=response1)<>publication1 then raise exception 'P2切替でR1 provenanceが変化しました。'; end if;
   begin update public.exhibition_publication_versions publication set note='改変' where publication.id=publication1;raise exception 'Publication Versionを変更できました。';exception when others then if sqlerrm='Publication Versionを変更できました。' then raise;end if;end;
@@ -123,6 +160,7 @@ set local role authenticated;
 do $$ begin
   begin perform public.admin_finalize_exhibition_publication_v2(gen_random_uuid(),'forged');raise exception 'MemberがPublicationを作成できました。';exception when others then if sqlerrm='MemberがPublicationを作成できました。' then raise;end if;end;
   begin perform public.admin_set_current_exhibition_publication_v2(gen_random_uuid(),'forged');raise exception 'MemberがCurrentを変更できました。';exception when others then if sqlerrm='MemberがCurrentを変更できました。' then raise;end if;end;
+  begin perform public.admin_publish_exhibition_guide_v2(gen_random_uuid());raise exception 'Memberが案内ページを公開できました。';exception when others then if sqlerrm='Memberが案内ページを公開できました。' then raise;end if;end;
   if exists(select 1 from public.exhibition_publication_items) then raise exception 'MemberがPublication Itemsを列挙できました。'; end if;
 end $$;
 reset role;
