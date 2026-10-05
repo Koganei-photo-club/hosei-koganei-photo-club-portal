@@ -51,21 +51,32 @@ begin
   perform set_config('request.jwt.claims',jsonb_build_object('email','__phase4_member1__@example.invalid','role','authenticated')::text,true);
   v_result:=public.save_exhibition_work_draft_v2(v_event_id,null,'未確認','portrait','A3','',297,420,true,null,null);
   v_unaccepted_work_id:=(v_result->>'id')::uuid;
-  perform public.save_exhibition_caption_draft_v2(v_unaccepted_work_id,'Phase 4検証','organizer','','digital','','Camera','','','unnecessary','','','none','',null);
+  perform public.save_exhibition_caption_draft_v2(v_unaccepted_work_id,'Phase 4検証','organizer','','digital','','Camera','','','unnecessary','','','none','',null,'none','');
   begin perform public.submit_exhibition_caption_v2(v_unaccepted_work_id); raise exception '未確認WorkでCaption提出できました。';
   exception when others then if sqlerrm='未確認WorkでCaption提出できました。' then raise; end if; end;
 
   -- undecided/self英題/film条件をserver-sideで拒否する。
-  perform public.save_exhibition_caption_draft_v2(v_work_id,'Phase 4検証','self','','digital','','Camera','','','undecided','','','none','',null);
+  perform public.save_exhibition_caption_draft_v2(v_work_id,'Phase 4検証','self','','digital','','Camera','','','undecided','','','none','',null,'none','');
   begin perform public.submit_exhibition_caption_v2(v_work_id); raise exception '未解決Captionが提出できました。';
   exception when others then if sqlerrm='未解決Captionが提出できました。' then raise; end if; end;
-  perform public.save_exhibition_caption_draft_v2(v_work_id,'Phase 4検証','self','','film','','Camera','','','unnecessary','','','none','',null);
+  perform public.save_exhibition_caption_draft_v2(v_work_id,'Phase 4検証','self','','film','','Camera','','','unnecessary','','','none','',null,'none','');
   begin perform public.submit_exhibition_caption_v2(v_work_id); raise exception '英題/Film不足が許可されました。';
   exception when others then if sqlerrm='英題/Film不足が許可されました。' then raise; end if; end;
 
+  -- AI生成・大幅加工等は正式提出時に選択必須。「あり」は内容も必須。
+  perform public.save_exhibition_caption_draft_v2(v_work_id,'Phase 4検証','organizer','','digital','','Camera','','','unnecessary','','','none','',null,null,'');
+  begin perform public.submit_exhibition_caption_v2(v_work_id); raise exception 'AI/加工申告の未選択が許可されました。';
+  exception when others then if sqlerrm='AI/加工申告の未選択が許可されました。' then raise; end if; end;
+  perform public.save_exhibition_caption_draft_v2(v_work_id,'Phase 4検証','organizer','','digital','','Camera','','','unnecessary','','','none','',null,'declared','');
+  begin perform public.submit_exhibition_caption_v2(v_work_id); raise exception 'AI/加工ありの内容不足が許可されました。';
+  exception when others then if sqlerrm='AI/加工ありの内容不足が許可されました。' then raise; end if; end;
+
   -- organizer modeは空英題で提出可能。Snapshotはimmutable。
-  perform public.save_exhibition_caption_draft_v2(v_work_id,'Phase 4検証','organizer','','film','','Camera','Lens','Film X','provided','説明','','none','',null);
+  perform public.save_exhibition_caption_draft_v2(v_work_id,'Phase 4検証','organizer','','film','','Camera','Lens','Film X','provided','説明','','none','',null,'declared','生成AIで背景の一部を補完');
   v_result:=public.submit_exhibition_caption_v2(v_work_id); v_caption1_id:=(v_result->>'snapshotId')::uuid;
+  if (select snapshot.ai_processing_declaration from public.exhibition_caption_submission_snapshots snapshot where snapshot.id=v_caption1_id)<>'declared'
+    or (select snapshot.ai_processing_details from public.exhibition_caption_submission_snapshots snapshot where snapshot.id=v_caption1_id)<>'生成AIで背景の一部を補完'
+    then raise exception 'AI/加工申告がCaption Snapshotへ固定されませんでした。'; end if;
   begin update public.exhibition_caption_submission_snapshots set display_name='改ざん' where id=v_caption1_id; raise exception 'Caption Snapshotを更新できました。';
   exception when others then if sqlerrm='Caption Snapshotを更新できました。' then raise; end if; end;
 
@@ -100,7 +111,7 @@ begin
 
   -- Correctionは明示再提出でversion 2、古いSnapshot Reviewは拒否。
   perform set_config('request.jwt.claims',jsonb_build_object('email','__phase4_member1__@example.invalid','role','authenticated')::text,true);
-  perform public.save_exhibition_caption_draft_v2(v_work_id,'Phase 4検証','self','Self Title','digital','','Camera','','','provided','修正版説明','','none','',null);
+  perform public.save_exhibition_caption_draft_v2(v_work_id,'Phase 4検証','self','Self Title','digital','','Camera','','','provided','修正版説明','','none','',null,'none','');
   v_result:=public.submit_exhibition_caption_v2(v_work_id); v_caption2_id:=(v_result->>'snapshotId')::uuid;
   if (v_result->>'versionNo')::integer<>2 then raise exception 'Caption versionが増加しませんでした。'; end if;
   perform set_config('request.jwt.claims',jsonb_build_object('email',v_admin_email,'role','authenticated')::text,true);
@@ -117,7 +128,7 @@ begin
   perform set_config('request.jwt.claims',jsonb_build_object('email','__phase4_member1__@example.invalid','role','authenticated')::text,true);
   begin perform public.submit_exhibition_caption_v2(v_work_id); raise exception '変更なしCaption再提出が許可されました。';
   exception when others then if sqlerrm='変更なしCaption再提出が許可されました。' then raise; end if; end;
-  perform public.save_exhibition_caption_draft_v2(v_work_id,'Phase 4検証 改','self','Self Title','digital','','Camera','','','provided','修正版説明','','none','',null);
+  perform public.save_exhibition_caption_draft_v2(v_work_id,'Phase 4検証 改','self','Self Title','digital','','Camera','','','provided','修正版説明','','none','',null,'none','');
   perform public.cancel_exhibition_caption_reedit_v2(v_case_id,'取消');
   if (select caption.display_name from public.exhibition_caption_working_data caption where caption.work_id=v_work_id)<>'Phase 4検証' then raise exception '取消でaccepted Captionへ復元されませんでした。'; end if;
 
@@ -126,7 +137,7 @@ begin
   perform set_config('request.jwt.claims',jsonb_build_object('email',v_admin_email,'role','authenticated')::text,true);
   perform public.admin_decide_exhibition_caption_reedit_v2(v_case_id,true,'許可',now()+interval '1 day');
   perform set_config('request.jwt.claims',jsonb_build_object('email','__phase4_member1__@example.invalid','role','authenticated')::text,true);
-  perform public.save_exhibition_caption_draft_v2(v_work_id,'Phase 4検証 改','self','Self Title','digital','','Camera','','','provided','修正版説明','','none','',null);
+  perform public.save_exhibition_caption_draft_v2(v_work_id,'Phase 4検証 改','self','Self Title','digital','','Camera','','','provided','修正版説明','','none','',null,'none','');
   v_result:=public.submit_exhibition_caption_v2(v_work_id); v_caption3_id:=(v_result->>'snapshotId')::uuid;
   if (v_result->>'versionNo')::integer<>3 or (select work.workflow_state from public.exhibition_works work where work.id=v_work_id)<>'accepted' then raise exception 'Caption再提出またはWork独立状態が不正です。'; end if;
 

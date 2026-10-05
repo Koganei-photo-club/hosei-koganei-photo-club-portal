@@ -36,7 +36,7 @@ begin
   if not exists(select 1 from public.admin_get_exhibition_action_center_v2(v_event_id) action where action.action_type='caption_missing' and action.work_id=v_work_id) then raise exception 'Caption missing actionがありません。'; end if;
 
   perform set_config('request.jwt.claims',jsonb_build_object('email','__phase5_member__@example.invalid','role','authenticated')::text,true);
-  perform public.save_exhibition_caption_draft_v2(v_work_id,'Phase 5','organizer','','digital','','Camera','','','unnecessary','','','none','',null);
+  perform public.save_exhibition_caption_draft_v2(v_work_id,'Phase 5','organizer','','digital','','Camera','','','unnecessary','','','none','',null,'none','');
   v_result:=public.submit_exhibition_caption_v2(v_work_id); v_c1:=(v_result->>'snapshotId')::uuid;
   if (select snapshot.work_submission_snapshot_id from public.exhibition_caption_submission_snapshots snapshot where snapshot.id=v_c1) is distinct from v_w1 then raise exception 'C1がW1へ固定されていません。'; end if;
   perform set_config('request.jwt.claims',jsonb_build_object('email',v_admin_email,'role','authenticated')::text,true);
@@ -67,7 +67,7 @@ begin
   -- C2はW2へ固定され、C1のOrganizer titleはC2を満たさない。
   perform set_config('request.jwt.claims',jsonb_build_object('email','__phase5_member__@example.invalid','role','authenticated')::text,true);
   perform public.start_stale_exhibition_caption_resubmission_v2(v_work_id);
-  perform public.save_exhibition_caption_draft_v2(v_work_id,'Phase 5','organizer','','digital','','Camera','','','unnecessary','','','none','',null);
+  perform public.save_exhibition_caption_draft_v2(v_work_id,'Phase 5','organizer','','digital','','Camera','','','unnecessary','','','none','',null,'none','');
   v_result:=public.submit_exhibition_caption_v2(v_work_id); v_c2:=(v_result->>'snapshotId')::uuid;
   if (select snapshot.work_submission_snapshot_id from public.exhibition_caption_submission_snapshots snapshot where snapshot.id=v_c2) is distinct from v_w2 then raise exception 'C2がW2へ固定されていません。'; end if;
   perform set_config('request.jwt.claims',jsonb_build_object('email',v_admin_email,'role','authenticated')::text,true);

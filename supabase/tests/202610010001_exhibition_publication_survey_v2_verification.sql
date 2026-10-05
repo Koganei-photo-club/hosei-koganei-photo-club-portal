@@ -49,9 +49,9 @@ begin
   perform public.admin_review_exhibition_work_v2(wa,'accepted','{}','',null);
   perform public.admin_review_exhibition_work_v2(wb,'accepted','{}','',null);
   perform set_config('request.jwt.claims',jsonb_build_object('email','__phase8_member__@example.invalid','role','authenticated')::text,true);
-  perform public.save_exhibition_caption_draft_v2(a,'作者A','self','Work A','digital','','Camera A','','','provided','説明A','','none','',null);
+  perform public.save_exhibition_caption_draft_v2(a,'作者A','self','Work A','digital','','Camera A','','','provided','説明A','','none','',null,'none','');
   result:=public.submit_exhibition_caption_v2(a);ca:=(result->>'snapshotId')::uuid;
-  perform public.save_exhibition_caption_draft_v2(b,'作者B','self','Work B','film','','Camera B','','Film B','provided','説明B','','none','',null);
+  perform public.save_exhibition_caption_draft_v2(b,'作者B','self','Work B','film','','Camera B','','Film B','provided','説明B','','none','',null,'none','');
   result:=public.submit_exhibition_caption_v2(b);cb:=(result->>'snapshotId')::uuid;
   perform set_config('request.jwt.claims',jsonb_build_object('email',admin_email,'role','authenticated')::text,true);
   perform public.admin_review_exhibition_caption_v2(ca,'accepted','{}','',null);

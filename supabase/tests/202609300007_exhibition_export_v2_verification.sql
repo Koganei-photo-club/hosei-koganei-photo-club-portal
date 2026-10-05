@@ -45,7 +45,7 @@ begin
   if not exists(select 1 from public.admin_get_exhibition_export_readiness_v2(event_id) readiness where not readiness.ready and 'Caption not submitted'=any(readiness.reasons)) then raise exception 'Caption未提出blockがありません。'; end if;
   begin perform public.admin_finalize_exhibition_export_v2(event_id,'invalid'); raise exception 'CaptionなしでExportできました。'; exception when others then if sqlerrm='CaptionなしでExportできました。' then raise; end if; end;
   perform set_config('request.jwt.claims',jsonb_build_object('email','__phase7_member__@example.invalid','role','authenticated')::text,true);
-  perform public.save_exhibition_caption_draft_v2(work_id,'作者、A','organizer','','digital','','Camera','Lens','Film','provided',E'一行目\n二行目 "引用"','English, description','none','',null);
+  perform public.save_exhibition_caption_draft_v2(work_id,'作者、A','organizer','','digital','','Camera','Lens','Film','provided',E'一行目\n二行目 "引用"','English, description','none','',null,'none','');
   result:=public.submit_exhibition_caption_v2(work_id); c1:=(result->>'snapshotId')::uuid;
   perform set_config('request.jwt.claims',jsonb_build_object('email',admin_email,'role','authenticated')::text,true);
   if not exists(select 1 from public.admin_get_exhibition_export_readiness_v2(event_id) readiness where 'Caption awaiting review'=any(readiness.reasons)) then raise exception 'Caption pending blockがありません。'; end if;
@@ -54,7 +54,7 @@ begin
 
   -- C1はW1基準。organizer derivation必須。
   perform set_config('request.jwt.claims',jsonb_build_object('email','__phase7_member__@example.invalid','role','authenticated')::text,true);
-  perform public.save_exhibition_caption_draft_v2(work_id,'作者、A','organizer','','digital','','Camera','Lens','Film','provided',E'一行目\n二行目 "引用"','English, description','none','',null);
+  perform public.save_exhibition_caption_draft_v2(work_id,'作者、A','organizer','','digital','','Camera','Lens','Film','provided',E'一行目\n二行目 "引用"','English, description','none','',null,'none','');
   result:=public.submit_exhibition_caption_v2(work_id); c1:=(result->>'snapshotId')::uuid;
   perform set_config('request.jwt.claims',jsonb_build_object('email',admin_email,'role','authenticated')::text,true);
   perform public.admin_review_exhibition_caption_v2(c1,'accepted','{}','',null);
@@ -86,7 +86,7 @@ begin
   result:=public.admin_finalize_exhibition_layout_v2(layout2,'W2'); final2:=(result->>'finalizationId')::uuid;
   perform set_config('request.jwt.claims',jsonb_build_object('email','__phase7_member__@example.invalid','role','authenticated')::text,true);
   perform public.start_stale_exhibition_caption_resubmission_v2(work_id);
-  perform public.save_exhibition_caption_draft_v2(work_id,'作者B','organizer','','digital','','Camera2','','','unnecessary','','','none','',null);
+  perform public.save_exhibition_caption_draft_v2(work_id,'作者B','organizer','','digital','','Camera2','','','unnecessary','','','none','',null,'none','');
   result:=public.submit_exhibition_caption_v2(work_id); c2:=(result->>'snapshotId')::uuid;
   perform set_config('request.jwt.claims',jsonb_build_object('email',admin_email,'role','authenticated')::text,true);
   perform public.admin_review_exhibition_caption_v2(c2,'accepted','{}','',null);

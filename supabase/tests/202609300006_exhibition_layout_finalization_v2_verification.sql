@@ -97,7 +97,7 @@ begin
   if private.layout_requires_physical_reconfirmation_v2(event_id) then raise exception 'title-only変更で物理再確認が必要になりました。'; end if;
   -- Captionのみの変更も物理Layoutへ影響しない。
   perform set_config('request.jwt.claims',jsonb_build_object('email','__phase6_member__@example.invalid','role','authenticated')::text,true);
-  perform public.save_exhibition_caption_draft_v2(a,'作者A','organizer','','digital','','Camera','','','unnecessary','','','none','',null);
+  perform public.save_exhibition_caption_draft_v2(a,'作者A','organizer','','digital','','Camera','','','unnecessary','','','none','',null,'none','');
   result:=public.submit_exhibition_caption_v2(a); cap1:=(result->>'snapshotId')::uuid;
   perform set_config('request.jwt.claims',jsonb_build_object('email',admin_email,'role','authenticated')::text,true);
   perform public.admin_review_exhibition_caption_v2(cap1,'accepted','{}','',null);
@@ -106,7 +106,7 @@ begin
   perform set_config('request.jwt.claims',jsonb_build_object('email',admin_email,'role','authenticated')::text,true);
   perform public.admin_decide_exhibition_caption_reedit_v2((result->>'caseId')::uuid,true,'検証',now()+interval '1 day');
   perform set_config('request.jwt.claims',jsonb_build_object('email','__phase6_member__@example.invalid','role','authenticated')::text,true);
-  perform public.save_exhibition_caption_draft_v2(a,'作者A','organizer','','digital','','Camera','','','provided','Caption only','','none','',null);
+  perform public.save_exhibition_caption_draft_v2(a,'作者A','organizer','','digital','','Camera','','','provided','Caption only','','none','',null,'none','');
   result:=public.submit_exhibition_caption_v2(a); cap2:=(result->>'snapshotId')::uuid;
   perform set_config('request.jwt.claims',jsonb_build_object('email',admin_email,'role','authenticated')::text,true);
   perform public.admin_review_exhibition_caption_v2(cap2,'accepted','{}','',null);

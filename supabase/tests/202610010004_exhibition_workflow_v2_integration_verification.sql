@@ -63,9 +63,9 @@ begin
 
   -- Caption: exact accepted Work SnapshotへbindされたSelf英題を正式提出・確認する。
   perform set_config('request.jwt.claims',jsonb_build_object('email','__phase11_member__@example.invalid','role','authenticated')::text,true);
-  perform public.save_exhibition_caption_draft_v2(w1,'作者1','self','Public Work','digital','','Camera 1','','','unnecessary','','','none','',null);
+  perform public.save_exhibition_caption_draft_v2(w1,'作者1','self','Public Work','digital','','Camera 1','','','unnecessary','','','none','',null,'none','');
   result:=public.submit_exhibition_caption_v2(w1);c1:=(result->>'snapshotId')::uuid;
-  perform public.save_exhibition_caption_draft_v2(w2,'作者2','self','No Image Work','digital','','Camera 2','','','unnecessary','','','none','',null);
+  perform public.save_exhibition_caption_draft_v2(w2,'作者2','self','No Image Work','digital','','Camera 2','','','unnecessary','','','none','',null,'none','');
   result:=public.submit_exhibition_caption_v2(w2);c2:=(result->>'snapshotId')::uuid;
   if (select caption.work_submission_snapshot_id from public.exhibition_caption_submission_snapshots caption where caption.id=c1)<>ws1
     or (select caption.work_submission_snapshot_id from public.exhibition_caption_submission_snapshots caption where caption.id=c2)<>ws2 then
@@ -105,13 +105,14 @@ begin
   end if;
   perform set_config('request.jwt.claims',jsonb_build_object('email','__phase11_member__@example.invalid','role','authenticated')::text,true);
   perform public.start_stale_exhibition_caption_resubmission_v2(w1);
-  perform public.save_exhibition_caption_draft_v2(w1,'作者1','self','Public Work Revised','digital','','Camera 1','','','unnecessary','','','none','',null);
+  perform public.save_exhibition_caption_draft_v2(w1,'作者1','self','Public Work Revised','digital','','Camera 1','','','unnecessary','','','none','',null,'none','');
   result:=public.submit_exhibition_caption_v2(w1);c1v2:=(result->>'snapshotId')::uuid;
   perform set_config('request.jwt.claims',jsonb_build_object('email',admin_email,'role','authenticated')::text,true);
   perform public.admin_review_exhibition_caption_v2(c1v2,'accepted','{}','',null);
   result:=public.admin_finalize_exhibition_export_v2(event_id,'E2');export2:=(result->>'exportVersionId')::uuid;
   if (select item.work_submission_snapshot_id from public.exhibition_export_items item where item.export_version_id=export2 and item.work_id=w1)<>ws1v2
     or (select item.caption_submission_snapshot_id from public.exhibition_export_items item where item.export_version_id=export2 and item.work_id=w1)<>c1v2
+    or (select item.ai_processing_declaration from public.exhibition_export_items item where item.export_version_id=export2 and item.work_id=w1)<>'none'
     or jsonb_build_object('version',(select to_jsonb(export_version) from public.exhibition_export_versions export_version where export_version.id=export1),
       'items',(select jsonb_agg(to_jsonb(item) order by item.display_no) from public.exhibition_export_items item where item.export_version_id=export1)) is distinct from export1_before then
     raise exception 'Export V2 provenanceまたはExport V1 immutabilityが不正です。';
@@ -144,7 +145,8 @@ begin
   result:=public.admin_finalize_exhibition_archive_v2(actual_id,'Archive A1');archive_id:=(result->>'archiveVersionId')::uuid;
   if (select count(*) from public.exhibition_archive_items item where item.archive_version_id=archive_id)<>1
     or not exists(select 1 from public.exhibition_archive_items item where item.archive_version_id=archive_id and item.work_id=w1 and item.display_no=1
-      and item.work_submission_snapshot_id=ws1v2 and item.caption_submission_snapshot_id=c1v2 and item.actual_x_mm=10)
+      and item.work_submission_snapshot_id=ws1v2 and item.caption_submission_snapshot_id=c1v2
+      and item.ai_processing_declaration='none' and item.actual_x_mm=10)
     or exists(select 1 from public.exhibition_archive_items item where item.archive_version_id=archive_id and item.work_id=w2) then
     raise exception 'Archive authoritative exhibited set/provenanceが不正です。';
   end if;

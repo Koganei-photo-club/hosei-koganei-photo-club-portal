@@ -52,11 +52,11 @@ begin
 
   -- AはActual/Archive用Snapshotと、Export用の最新Snapshotを正式な再編集経路で分ける。
   perform set_config('request.jwt.claims',jsonb_build_object('email','__phase10_member__@example.invalid','role','authenticated')::text,true);
-  perform public.save_exhibition_caption_draft_v2(a,'作者A','organizer','','digital','','Camera','','','provided','説明A','','none','',null);
+  perform public.save_exhibition_caption_draft_v2(a,'作者A','organizer','','digital','','Camera','','','provided','説明A','','none','',null,'none','');
   result:=public.submit_exhibition_caption_v2(a);ca:=(result->>'snapshotId')::uuid;
-  perform public.save_exhibition_caption_draft_v2(b,'作者B','self','B','digital','','Camera','','','provided','説明B','','none','',null);
+  perform public.save_exhibition_caption_draft_v2(b,'作者B','self','B','digital','','Camera','','','provided','説明B','','none','',null,'none','');
   result:=public.submit_exhibition_caption_v2(b);cb:=(result->>'snapshotId')::uuid;
-  perform public.save_exhibition_caption_draft_v2(c,'作者C','self','C','digital','','Camera','','','provided','説明C','','none','',null);
+  perform public.save_exhibition_caption_draft_v2(c,'作者C','self','C','digital','','Camera','','','provided','説明C','','none','',null,'none','');
   result:=public.submit_exhibition_caption_v2(c);cc:=(result->>'snapshotId')::uuid;
   perform set_config('request.jwt.claims',jsonb_build_object('email',admin_email,'role','authenticated')::text,true);
   perform public.admin_review_exhibition_caption_v2(ca,'accepted','{}','',null);
@@ -67,7 +67,7 @@ begin
   perform set_config('request.jwt.claims',jsonb_build_object('email',admin_email,'role','authenticated')::text,true);
   perform public.admin_decide_exhibition_caption_reedit_v2(caption_case,true,'許可',now()+interval '1 day');
   perform set_config('request.jwt.claims',jsonb_build_object('email','__phase10_member__@example.invalid','role','authenticated')::text,true);
-  perform public.save_exhibition_caption_draft_v2(a,'作者A別案','organizer','','digital','','Camera','','','provided','説明A別案','','none','',null);
+  perform public.save_exhibition_caption_draft_v2(a,'作者A別案','organizer','','digital','','Camera','','','provided','説明A別案','','none','',null,'none','');
   result:=public.submit_exhibition_caption_v2(a);ca_other:=(result->>'snapshotId')::uuid;
   perform set_config('request.jwt.claims',jsonb_build_object('email',admin_email,'role','authenticated')::text,true);
   perform public.admin_review_exhibition_caption_v2(ca_other,'accepted','{}','',null);
