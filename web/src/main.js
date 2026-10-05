@@ -3510,6 +3510,7 @@ function renderEditor(event, initialGenre = "meeting") {
     <section id="exhibitionFields" class="full form-grid conditional-fields">
       <label>写真展タイトル<input name="exhibition_title"></label><label>出展可能作品数<input type="number" name="max_works" min="1"></label>
       <label>最低シフト人数<input type="number" name="min_shift_people" min="1"></label><label class="full">シフト枠（1行1枠）<textarea name="shift_slots_text" rows="5" placeholder="8月23日 15:00〜17:00"></textarea></label>
+      <fieldset id="workflowV2Fields" class="full public-site-fields"><legend>写真展 Workflow v2</legend>${Number(event?.exhibition_workflow_version) === 2 ? `<div class="notice"><strong>Workflow v2 有効</strong><p>出展申込：${fmt(event.exhibition_application_deadline)}／作品提出：${fmt(event.exhibition_work_submission_deadline)}／修正：${fmt(event.exhibition_revision_deadline)}／キャプション：${fmt(event.exhibition_caption_deadline)}</p></div>` : `<p class="muted">新しい写真展で使用します。有効化後はLegacyへ戻せません。既存の「申込締切」と、Workflow v2の出展申込締切は別項目です。</p><label class="full"><input type="checkbox" name="activate_workflow_v2">この写真展をWorkflow v2として開始する</label><div id="workflowV2ActivationFields" class="form-grid full nested-fields hidden"><label>出展申込締切<input type="datetime-local" name="exhibition_application_deadline"></label><label>作品提出締切<input type="datetime-local" name="exhibition_work_submission_deadline"></label><label>修正期限<input type="datetime-local" name="exhibition_revision_deadline"></label><label>キャプション情報締切<input type="datetime-local" name="exhibition_caption_deadline"></label><label>規約参照<input name="agreement_reference" placeholder="例：2026-summer-v1"></label><label class="full">規約本文<textarea name="agreement_content" rows="8"></textarea></label><label class="full">有効化理由<input name="activation_reason" placeholder="例：2026年度夏写真展の新規募集開始"></label><div class="notice full">4期限は「出展申込 ＜ 作品提出 ＜ 修正 ＜ キャプション」の順で、出展申込締切を含めすべて未来に設定してください。有効化は一時保存では実行されません。</div></div>`}</fieldset>
       <fieldset class="full public-site-fields"><legend>一般向け写真展サイト</legend><p class="muted">ここで保存した内容は「写真展サイトを公開」を押すまで一般公開されません。保存し直すと安全のためサイトは下書きへ戻ります。</p><div class="form-grid">
         <label class="full">写真展キー<input name="exhibition_key" maxlength="100" placeholder="例：2026-winter"><small>半角数字・小文字・ハイフン。公開URLの識別子になります。</small></label>
         <h4 class="full language-field-heading">日本語</h4><label>サイト用タイトル<input name="site_title" maxlength="200"></label><label>サイト用会場補足（任意）<input name="site_additional_info" maxlength="3000" placeholder="例：EAST館 2階 202"></label>
@@ -3612,6 +3613,12 @@ function renderEditor(event, initialGenre = "meeting") {
         .querySelector("#surveyPeriodFields")
         .classList.toggle("hidden", !surveyEnabled);
       document
+        .querySelector("#workflowV2ActivationFields")
+        ?.classList.toggle(
+          "hidden",
+          genre !== "exhibition" || !form.activate_workflow_v2?.checked,
+        );
+      document
         .querySelector("#participationLimitFields")
         .classList.toggle("hidden", genre === "exhibition");
       document
@@ -3691,6 +3698,49 @@ function renderEditor(event, initialGenre = "meeting") {
         throw new Error(
           "アンケートを受け付ける場合は、受付開始と受付終了を入力してください。",
         );
+      const activatingWorkflowV2 =
+        values.genre === "exhibition" &&
+        Number(event?.exhibition_workflow_version || 1) !== 2 &&
+        form.activate_workflow_v2?.checked;
+      if (activatingWorkflowV2) {
+        if (draft)
+          throw new Error(
+            "Workflow v2の有効化は「保存」から実行してください。",
+          );
+        const deadlines = [
+          values.exhibition_application_deadline,
+          values.exhibition_work_submission_deadline,
+          values.exhibition_revision_deadline,
+          values.exhibition_caption_deadline,
+        ];
+        if (deadlines.some((value) => !value))
+          throw new Error("Workflow v2の4つの締切をすべて入力してください。");
+        if (
+          !(
+            deadlines[0] < deadlines[1] &&
+            deadlines[1] < deadlines[2] &&
+            deadlines[2] < deadlines[3]
+          )
+        )
+          throw new Error(
+            "締切は、出展申込 ＜ 作品提出 ＜ 修正 ＜ キャプションの順にしてください。",
+          );
+        if (new Date(deadlines[0]) <= new Date())
+          throw new Error("Workflow v2の締切はすべて未来に設定してください。");
+        if (
+          !values.agreement_reference.trim() ||
+          !values.agreement_content.trim()
+        )
+          throw new Error("規約参照と規約本文を入力してください。");
+        if (!values.activation_reason.trim())
+          throw new Error("Workflow v2の有効化理由を入力してください。");
+        if (
+          !confirm(
+            "この写真展をWorkflow v2として開始しますか？\n有効化後はLegacyへ戻せません。",
+          )
+        )
+          return;
+      }
       if (!draft) {
         if (!values.starts_at || !values.place.trim() || !values.contact.trim())
           throw new Error("保存には日時、場所、企画幹部の連絡先が必要です。");
@@ -3851,9 +3901,44 @@ function renderEditor(event, initialGenre = "meeting") {
         if (pathError)
           throw new Error(`DM画像の登録情報を保存できませんでした：${pathError.message}`);
       }
+      if (activatingWorkflowV2) {
+        const { error: activationError } = await supabase.rpc(
+          "admin_activate_exhibition_workflow_v2",
+          {
+            p_event_id: savedEvent.id,
+            p_application_deadline: asIso(
+              values.exhibition_application_deadline,
+            ),
+            p_work_submission_deadline: asIso(
+              values.exhibition_work_submission_deadline,
+            ),
+            p_revision_deadline: asIso(values.exhibition_revision_deadline),
+            p_caption_deadline: asIso(values.exhibition_caption_deadline),
+            p_agreement_reference: values.agreement_reference.trim(),
+            p_agreement_content: values.agreement_content.trim(),
+            p_reason: values.activation_reason.trim(),
+          },
+        );
+        if (activationError) {
+          adminGenreTab = "exhibition";
+          await renderAdmin();
+          failure(
+            new Error(
+              `予定自体は保存されましたが、Workflow v2の有効化に失敗したためLegacyのままです。予定の「編集」から内容を確認して再試行してください：${activationError.message}`,
+            ),
+          );
+          return;
+        }
+      }
       adminGenreTab = values.genre;
       await renderAdmin();
-      message(draft ? "下書きを保存しました。" : "予定を保存しました。");
+      message(
+        activatingWorkflowV2
+          ? "予定を保存し、Workflow v2を有効化しました。"
+          : draft
+            ? "下書きを保存しました。"
+            : "予定を保存しました。",
+      );
     } catch (error) {
       failure(error);
       updateButtons();
