@@ -95,6 +95,57 @@ function setupExhibitionMyPageNavigation() {
   });
 }
 
+function adminReviewMessage(workId, text, error = false, caption = false) {
+  const card = document.querySelector(`.admin-work-card[data-work-id="${workId}"]`),
+    target = caption ? card?.querySelector(".caption-admin-panel") : card?.querySelector(".admin-work-copy"),
+    destination = target || card || document.querySelector("#participantAdmin");
+  sectionMessage(destination, text, error, false);
+  if (error) target?.querySelector(":scope > .section-message")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function openReviewDialog({ title, fields, requireDeadline = false }) {
+  let dialog = document.querySelector("#reviewDialog");
+  if (!dialog) {
+    dialog = document.createElement("dialog");
+    dialog.id = "reviewDialog";
+    dialog.className = "review-dialog";
+    document.body.append(dialog);
+  }
+  dialog.innerHTML = `<form method="dialog" class="review-dialog-form"><div class="review-dialog-head"><div><span class="tag">REVIEW</span><h2>${esc(title)}</h2></div><button type="button" class="secondary cancel-review">キャンセル</button></div><div class="review-dialog-body"><div class="review-dialog-message notice error hidden" role="alert" aria-live="assertive"></div><fieldset><legend>修正が必要な項目（複数選択可）</legend><div class="review-field-options">${fields.map(({ value, label }) => `<label><input type="checkbox" name="problem_field" value="${esc(value)}">${esc(label)}</label>`).join("")}</div></fieldset><label>要修正理由<textarea name="reason" rows="5" maxlength="3000" required></textarea></label>${requireDeadline ? '<label>個別修正期限<input type="datetime-local" name="individual_deadline" required><small>Global修正期限を過ぎているため必須です。</small></label>' : ""}<div class="actions"><button type="button" class="secondary cancel-review">キャンセル</button><button type="submit">要修正にする</button></div></div></form>`;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      dialog.close();
+      resolve(value);
+    };
+    dialog.querySelectorAll(".cancel-review").forEach((button) => button.onclick = () => finish(null));
+    dialog.oncancel = (event) => { event.preventDefault(); finish(null); };
+    dialog.querySelector("form").onsubmit = (event) => {
+      event.preventDefault();
+      const selected = [...dialog.querySelectorAll('[name="problem_field"]:checked')].map((input) => input.value),
+        reason = dialog.querySelector('[name="reason"]').value.trim(),
+        deadlineValue = dialog.querySelector('[name="individual_deadline"]')?.value,
+        errorBox = dialog.querySelector(".review-dialog-message");
+      let error = "";
+      if (!selected.length) error = "修正項目を1つ以上選択してください。";
+      else if (!reason) error = "要修正理由を入力してください。";
+      else if (requireDeadline && !deadlineValue) error = "個別修正期限を入力してください。";
+      const deadline = deadlineValue ? new Date(deadlineValue) : null;
+      if (!error && deadline && (Number.isNaN(deadline.getTime()) || deadline.getTime() <= Date.now())) error = "個別修正期限は未来の日時を指定してください。";
+      if (error) {
+        errorBox.textContent = error;
+        errorBox.classList.remove("hidden");
+        errorBox.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        return;
+      }
+      finish({ fields: selected, reason, deadline: deadline?.toISOString() || null });
+    };
+    dialog.showModal();
+  });
+}
+
 async function boot() {
   if (!configured) {
     layout();
@@ -3076,22 +3127,33 @@ async function renderExhibitionParticipants(event) {
           p_submission_snapshot_id: work.current_submission_snapshot_id, p_result: "accepted",
           p_problem_fields: [], p_reason: "", p_individual_deadline: null,
         });
-        if (error) return failure(error); renderExhibitionParticipants(event);
+        if (error) return adminReviewMessage(work.id, error.message || "作品を確認済みにできませんでした。", true);
+        await renderExhibitionParticipants(event);
+        adminReviewMessage(work.id, "作品を確認済みにしました。");
       });
       controls.querySelector(".reject-v2-work")?.addEventListener("click", async () => {
-        const fields = prompt("問題項目をカンマ区切りで入力してください（original,title,orientation,print_size,physical_dimensions,publication_consent,other）", "other");
-        if (!fields) return; const reason = prompt("要修正理由（必須）"); if (!reason) return;
-        let deadline = null;
-        if (Date.now() >= new Date(event.exhibition_revision_deadline).getTime()) {
-          const value = prompt("Global修正期限後です。個別期限をISO形式で入力してください。", ""); if (!value) return;
-          deadline = new Date(value).toISOString();
-        }
+        const review = await openReviewDialog({
+          title: `${work.title || `WORK ${work.sort_order}`}｜作品を要修正にする`,
+          fields: [
+            { value: "original", label: "原画像" },
+            { value: "title", label: "作品名" },
+            { value: "orientation", label: "向き" },
+            { value: "print_size", label: "プリントサイズ・サイズ詳細" },
+            { value: "physical_dimensions", label: "壁面占有寸法" },
+            { value: "publication_consent", label: "写真展サイト掲載同意" },
+            { value: "other", label: "その他" },
+          ],
+          requireDeadline: Date.now() >= new Date(event.exhibition_revision_deadline).getTime(),
+        });
+        if (!review) return;
         const { error } = await supabase.rpc("admin_review_exhibition_work_v2", {
           p_submission_snapshot_id: work.current_submission_snapshot_id, p_result: "rejected",
-          p_problem_fields: fields.split(",").map((value) => value.trim()).filter(Boolean), p_reason: reason,
-          p_individual_deadline: deadline,
+          p_problem_fields: review.fields, p_reason: review.reason,
+          p_individual_deadline: review.deadline,
         });
-        if (error) return failure(error); renderExhibitionParticipants(event);
+        if (error) return adminReviewMessage(work.id, error.message || "作品を要修正にできませんでした。", true);
+        await renderExhibitionParticipants(event);
+        adminReviewMessage(work.id, "作品を要修正にしました。");
       });
       const decide = async (permit) => {
         const reason = prompt(permit ? "再編集を許可する理由（必須）" : "再編集を却下する理由（必須）"); if (!reason) return;
@@ -3100,7 +3162,9 @@ async function renderExhibitionParticipants(event) {
         const { error } = await supabase.rpc("admin_decide_exhibition_work_reedit_v2", {
           p_case_id: pendingCase.id, p_permit: permit, p_reason: reason, p_individual_deadline: deadline,
         });
-        if (error) return failure(error); renderExhibitionParticipants(event);
+        if (error) return adminReviewMessage(work.id, error.message || "再編集申請を処理できませんでした。", true);
+        await renderExhibitionParticipants(event);
+        adminReviewMessage(work.id, permit ? "作品の再編集を許可しました。" : "作品の再編集を却下しました。");
       };
       controls.querySelector(".permit-v2-reedit")?.addEventListener("click", () => decide(true));
       controls.querySelector(".reject-v2-reedit")?.addEventListener("click", () => decide(false));
@@ -3108,8 +3172,9 @@ async function renderExhibitionParticipants(event) {
         const reason = prompt("管理者取り下げ理由（必須）");
         if (!reason) return;
         const { error } = await supabase.rpc("admin_withdraw_exhibition_work_v2", { p_work_id: work.id, p_reason: reason });
-        if (error) return failure(error);
-        renderExhibitionParticipants(event);
+        if (error) return adminReviewMessage(work.id, error.message || "作品を取り下げられませんでした。", true);
+        await renderExhibitionParticipants(event);
+        adminReviewMessage(work.id, "作品を管理者として取り下げました。");
       });
     }
   });
@@ -3399,13 +3464,34 @@ async function renderAdminCaptionsV2(event, root, visibleWorks) {
     const snap = caption.exhibition_caption_submission_snapshots,
       detail = snap || caption,
       currentWorkSnapshot = Boolean(snap?.work_submission_snapshot_id && snap.work_submission_snapshot_id === work?.current_accepted_snapshot_id);
-    card.insertAdjacentHTML("beforeend", `<section class="caption-admin-panel"><div class="caption-admin-heading"><div><h4>Caption｜${esc(work?.title || "作品名未設定")}</h4><p>対象作品：<strong>${esc(work?.title || `WORK ${work?.sort_order || ""}`)}</strong></p></div><span class="status ${snap && !currentWorkSnapshot ? "caption-stale-status" : ""}">${snap ? currentWorkSnapshot ? "現在AcceptedのWork Submissionに対応" : "旧Work Submissionに対応（stale）" : "Caption Working Data"}</span></div><dl class="caption-details"><dt>状態</dt><dd>${esc(caption.state)}</dd><dt>表示名</dt><dd>${esc(detail.display_name || "")}</dd><dt>英語作品名</dt><dd>${esc(detail.english_title_mode === "self" ? detail.member_english_title : derived?.english_title || "主催者作成待ち")}</dd><dt>媒体</dt><dd>${esc(detail.medium || "")}</dd><dt>Camera / Lens / Film</dt><dd>${esc([detail.camera,detail.lens,detail.film].filter(Boolean).join(" / "))}</dd><dt>Description</dt><dd>${esc(detail.description_choice === "unnecessary" ? "不要" : detail.description_ja || "")}</dd><dt>AI生成・大幅加工等</dt><dd>${esc(detail.ai_processing_declaration === "declared" ? `あり：${detail.ai_processing_details || "内容未入力"}` : detail.ai_processing_declaration === "none" ? "なし" : "未選択")}</dd><dt>Instagram QR</dt><dd>${esc(detail.instagram_qr_choice || "none")}</dd></dl><div class="actions caption-admin-actions">${caption.state === "submitted" ? '<button class="accept-caption">Captionを確認済みにする</button><button class="reject-caption danger">要修正にする</button>' : ""}${pending ? '<button class="permit-caption-reedit">再編集を許可</button><button class="reject-caption-reedit danger">再編集を却下</button>' : ""}${snap?.english_title_mode === "organizer" ? '<button class="derive-caption-title secondary">主催者英語作品名を登録</button>' : ""}</div></section>`);
-    card.querySelector(".accept-caption")?.addEventListener("click", async () => { if (!confirm("表示中のCaption Snapshotを確認済みにしますか？")) return; const { error } = await supabase.rpc("admin_review_exhibition_caption_v2", { p_caption_snapshot_id: caption.current_submission_snapshot_id, p_result: "accepted", p_problem_fields: [], p_reason: "", p_individual_deadline: null }); if (error) return failure(error); renderExhibitionParticipants(event); });
-    card.querySelector(".reject-caption")?.addEventListener("click", async () => { const fields = prompt("問題項目（カンマ区切り）", "other"), reason = prompt("要修正理由（必須）"); if (!fields || !reason) return; let deadline = null; if (Date.now() >= new Date(event.exhibition_caption_deadline).getTime()) { const value = prompt("個別期限をISO形式で入力してください。"); if (!value) return; deadline = new Date(value).toISOString(); } const { error } = await supabase.rpc("admin_review_exhibition_caption_v2", { p_caption_snapshot_id: caption.current_submission_snapshot_id, p_result: "rejected", p_problem_fields: fields.split(",").map((v) => v.trim()).filter(Boolean), p_reason: reason, p_individual_deadline: deadline }); if (error) return failure(error); renderExhibitionParticipants(event); });
-    const decide = async (permit) => { const reason = prompt("判断理由（必須）"); if (!reason) return; let deadline = null; if (permit) { const value = prompt("再編集個別期限をISO形式で入力してください。"); if (!value) return; deadline = new Date(value).toISOString(); } const { error } = await supabase.rpc("admin_decide_exhibition_caption_reedit_v2", { p_case_id: pending.id, p_permit: permit, p_reason: reason, p_individual_deadline: deadline }); if (error) return failure(error); renderExhibitionParticipants(event); };
+    card.insertAdjacentHTML("beforeend", `<section class="caption-admin-panel"><div class="caption-admin-heading"><div><h4>Caption｜${esc(work?.title || "作品名未設定")}</h4><p>対象作品：<strong>${esc(work?.title || `WORK ${work?.sort_order || ""}`)}</strong></p></div><span class="status ${snap && !currentWorkSnapshot ? "caption-stale-status" : ""}">${snap ? currentWorkSnapshot ? "現在AcceptedのWork Submissionに対応" : "旧Work Submissionに対応（stale）" : "Caption Working Data"}</span></div><div class="section-message notice hidden" role="status" aria-live="polite"></div><dl class="caption-details"><dt>状態</dt><dd>${esc(caption.state)}</dd><dt>表示名</dt><dd>${esc(detail.display_name || "")}</dd><dt>英語作品名</dt><dd>${esc(detail.english_title_mode === "self" ? detail.member_english_title : derived?.english_title || "主催者作成待ち")}</dd><dt>媒体</dt><dd>${esc(detail.medium || "")}</dd><dt>Camera / Lens / Film</dt><dd>${esc([detail.camera,detail.lens,detail.film].filter(Boolean).join(" / "))}</dd><dt>Description</dt><dd>${esc(detail.description_choice === "unnecessary" ? "不要" : detail.description_ja || "")}</dd><dt>AI生成・大幅加工等</dt><dd>${esc(detail.ai_processing_declaration === "declared" ? `あり：${detail.ai_processing_details || "内容未入力"}` : detail.ai_processing_declaration === "none" ? "なし" : "未選択")}</dd><dt>Instagram QR</dt><dd>${esc(detail.instagram_qr_choice || "none")}</dd></dl><div class="actions caption-admin-actions">${caption.state === "submitted" ? '<button class="accept-caption">Captionを確認済みにする</button><button class="reject-caption danger">要修正にする</button>' : ""}${pending ? '<button class="permit-caption-reedit">再編集を許可</button><button class="reject-caption-reedit danger">再編集を却下</button>' : ""}${snap?.english_title_mode === "organizer" ? '<button class="derive-caption-title secondary">主催者英語作品名を登録</button>' : ""}</div></section>`);
+    card.querySelector(".accept-caption")?.addEventListener("click", async () => { if (!confirm("表示中のCaption Snapshotを確認済みにしますか？")) return; const { error } = await supabase.rpc("admin_review_exhibition_caption_v2", { p_caption_snapshot_id: caption.current_submission_snapshot_id, p_result: "accepted", p_problem_fields: [], p_reason: "", p_individual_deadline: null }); if (error) return adminReviewMessage(work.id, error.message || "Captionを確認済みにできませんでした。", true, true); await renderExhibitionParticipants(event); adminReviewMessage(work.id, "Captionを確認済みにしました。", false, true); });
+    card.querySelector(".reject-caption")?.addEventListener("click", async () => {
+      const review = await openReviewDialog({
+        title: `${work?.title || "Caption"}｜Captionを要修正にする`,
+        fields: [
+          { value: "display_name", label: "表示名" },
+          { value: "english_title", label: "英語作品名" },
+          { value: "medium", label: "媒体・媒体補足" },
+          { value: "camera", label: "Camera" },
+          { value: "lens", label: "Lens" },
+          { value: "film", label: "Film" },
+          { value: "description", label: "Description" },
+          { value: "instagram_qr", label: "Instagram情報・QR" },
+          { value: "other", label: "AI生成・大幅加工等／その他" },
+        ],
+        requireDeadline: Date.now() >= new Date(event.exhibition_caption_deadline).getTime(),
+      });
+      if (!review) return;
+      const { error } = await supabase.rpc("admin_review_exhibition_caption_v2", { p_caption_snapshot_id: caption.current_submission_snapshot_id, p_result: "rejected", p_problem_fields: review.fields, p_reason: review.reason, p_individual_deadline: review.deadline });
+      if (error) return adminReviewMessage(work.id, error.message || "Captionを要修正にできませんでした。", true, true);
+      await renderExhibitionParticipants(event);
+      adminReviewMessage(work.id, "Captionを要修正にしました。", false, true);
+    });
+    const decide = async (permit) => { const reason = prompt("判断理由（必須）"); if (!reason) return; let deadline = null; if (permit) { const value = prompt("再編集個別期限をISO形式で入力してください。"); if (!value) return; deadline = new Date(value).toISOString(); } const { error } = await supabase.rpc("admin_decide_exhibition_caption_reedit_v2", { p_case_id: pending.id, p_permit: permit, p_reason: reason, p_individual_deadline: deadline }); if (error) return adminReviewMessage(work.id, error.message || "Caption再編集申請を処理できませんでした。", true, true); await renderExhibitionParticipants(event); adminReviewMessage(work.id, permit ? "Captionの再編集を許可しました。" : "Captionの再編集を却下しました。", false, true); };
     card.querySelector(".permit-caption-reedit")?.addEventListener("click", () => decide(true));
     card.querySelector(".reject-caption-reedit")?.addEventListener("click", () => decide(false));
-    card.querySelector(".derive-caption-title")?.addEventListener("click", async () => { const title = prompt("主催者作成の英語作品名（必須）"); if (!title) return; const reason = prompt("作成・変更理由（任意）", "") ?? null; if (reason === null) return; const { error } = await supabase.rpc("admin_set_exhibition_caption_organizer_title_v2", { p_caption_snapshot_id: caption.current_submission_snapshot_id, p_english_title: title, p_reason: reason }); if (error) return failure(error); renderExhibitionParticipants(event); });
+    card.querySelector(".derive-caption-title")?.addEventListener("click", async () => { const title = prompt("主催者作成の英語作品名（必須）"); if (!title) return; const reason = prompt("作成・変更理由（任意）", "") ?? null; if (reason === null) return; const { error } = await supabase.rpc("admin_set_exhibition_caption_organizer_title_v2", { p_caption_snapshot_id: caption.current_submission_snapshot_id, p_english_title: title, p_reason: reason }); if (error) return adminReviewMessage(work.id, error.message || "主催者英語作品名を登録できませんでした。", true, true); await renderExhibitionParticipants(event); adminReviewMessage(work.id, "主催者英語作品名を登録しました。", false, true); });
   });
 }
 
