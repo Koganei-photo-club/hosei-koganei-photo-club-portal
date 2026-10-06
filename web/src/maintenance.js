@@ -173,6 +173,8 @@ export async function renderMaintenanceAdmin({ supabase, layout, hideMessage, me
   try {
     const state = await maintenanceState(supabase);
     if (!state.isMaintenanceAdmin) throw new Error("メンテナンス管理者権限がありません。");
+    const { data: authData } = await supabase.auth.getUser();
+    const currentEmail = (authData?.user?.email || "").toLowerCase();
     const [{ data: items, error }, { data: admins }, { data: logs }, { data: locks }, { data: events }] = await Promise.all([
       supabase.from("maintenances").select("*").order("scheduled_start_at"),
       supabase.from("maintenance_admins").select("email,name,role_name,active"),
@@ -185,7 +187,7 @@ export async function renderMaintenanceAdmin({ supabase, layout, hideMessage, me
     let selectedId = items.find((item) => item.status === "in_progress")?.id || items.find((item) => item.status === "scheduled")?.id || null;
     let centerMode = "new", historyPage = 1, calendarDate = new Date();
     const view = document.querySelector("#view");
-    view.innerHTML = `<div id="maintenanceStateBanner"></div><div class="maintenance-mobile-tools"><button id="openCalendar" class="secondary">カレンダー</button></div><div class="maintenance-admin-grid"><aside id="maintenanceAside" class="stack"></aside><section class="panel maintenance-center"><div id="maintenanceUpcoming"></div><div class="maintenance-tabs"><button data-mode="new">新規</button><button data-mode="history" class="secondary">履歴</button></div><div id="maintenanceCenter"></div></section><aside id="maintenanceCalendar" class="panel maintenance-calendar"></aside></div><div id="calendarBackdrop" class="calendar-backdrop hidden"></div>`;
+    view.innerHTML = `<div id="maintenanceStateBanner"></div><div class="maintenance-mobile-tools"><button id="openCalendar" class="secondary">カレンダー</button></div><div class="maintenance-admin-grid"><aside id="maintenanceAside" class="stack"></aside><section class="panel maintenance-center"><div id="maintenanceUpcoming"></div><div class="maintenance-tabs"><button data-mode="new">新規</button><button data-mode="history" class="secondary">履歴</button></div><div id="maintenanceCenter"></div></section><aside id="maintenanceCalendar" class="panel maintenance-calendar"></aside></div><div id="calendarBackdrop" class="calendar-backdrop hidden"></div><section id="exhibitionTestReset" class="panel stack"></section>`;
     const active = items.filter((item) => item.status === "in_progress");
     const banner = document.querySelector("#maintenanceStateBanner");
     if (state.state === "maintenance_state_error" || active.length > 1) banner.innerHTML = `<section class="notice error"><strong>⚠ メンテナンス状態に異常があります</strong><p>状態を診断し、必要に応じて修復してください。</p><button id="diagnoseState" class="danger">状態を確認・修復する</button></section>`;
@@ -195,6 +197,66 @@ export async function renderMaintenanceAdmin({ supabase, layout, hideMessage, me
     const recent = items.filter((item) => item.status === "completed").sort((a,b)=>new Date(b.ended_at||b.updated_at)-new Date(a.ended_at||a.updated_at)).slice(0,5);
     document.querySelector("#maintenanceAside").innerHTML = `${active.length===1 ? `<section class="panel"><h3>実施中</h3><button class="maintenance-list-item" data-id="${active[0].id}"><strong>${esc(active[0].title)}</strong></button></section>`:""}<section class="panel"><h3>直近の通常予定</h3>${(events||[]).length ? events.map((event)=>`<article class="maintenance-reference"><strong>${esc(event.title)}</strong><small>${fmt(event.starts_at)}<br>申込締切 ${fmt(event.registration_deadline)}</small></article>`).join(""):'<p class="muted">予定はありません。</p>'}</section><section class="panel"><h3>最近のメンテナンス</h3>${recent.length ? recent.map((item)=>`<button class="maintenance-list-item" data-id="${item.id}"><strong>${esc(item.title)}</strong><small>${fmt(item.ended_at)}</small></button>`).join(""):'<p class="muted">履歴はありません。</p>'}<button id="moreHistory" class="secondary">履歴をもっと見る</button></section>`;
     const center = document.querySelector("#maintenanceCenter");
+    const resetRoot = document.querySelector("#exhibitionTestReset");
+    const cleanupStorage = async (jobId, objects) => {
+      const succeeded = [], failed = [];
+      for (const object of objects || []) {
+        const { error: storageError } = await supabase.storage.from(object.bucket).remove([object.path]);
+        (storageError ? failed : succeeded).push(object);
+      }
+      const { error: updateError } = await supabase.rpc("maintenance_update_exhibition_reset_storage_v1", {
+        p_job_id: jobId, p_success_paths: succeeded, p_failed_paths: failed,
+        p_error: failed.length ? `${failed.length}件のStorage objectを削除できませんでした。` : "",
+      });
+      if (updateError) throw updateError;
+      return { succeeded, failed };
+    };
+    const renderResetTool = async () => {
+      const [{ data: targets, error: targetError }, { data: resetJobs, error: jobsError }] = await Promise.all([
+        supabase.rpc("maintenance_list_exhibition_reset_targets_v1"),
+        supabase.from("exhibition_test_reset_jobs").select("*").order("executed_at", { ascending: false }).limit(10),
+      ]);
+      if (targetError) throw targetError;
+      if (jobsError) throw jobsError;
+      const options = (targets || []).map((row) => `<option value="${esc(`${row.eventId}|${row.memberId}`)}">${esc(row.eventName)}｜${esc(row.memberNo)} ${esc(row.name)}（${esc(row.email)}）</option>`).join("");
+      resetRoot.innerHTML = `<div><span class="tag">MAINTENANCE ONLY</span><h2>写真展テストデータ完全リセット</h2><div class="notice error"><strong>不可逆な保守操作です。</strong><p>選択した写真展と部員のApplication・作品・正式履歴を削除します。Event、Member、Shiftは削除しません。</p></div></div><label>対象Event・Member<select id="resetTarget"><option value="">選択してください</option>${options}</select></label><div class="actions"><button id="previewReset" class="danger" ${options ? "" : "disabled"}>削除対象をPreview</button></div><div id="resetPreview"></div><section><h3>最近のReset</h3><div id="resetJobs">${(resetJobs || []).map((job) => `<article class="notice"><strong>${fmt(job.executed_at)}／${esc(job.executed_by)}</strong><p>DB: ${esc(job.db_reset_status)}／Storage: ${esc(job.storage_cleanup_status)}</p>${["failed","partial"].includes(job.storage_cleanup_status) ? `<button type="button" class="secondary retry-storage" data-job-id="${esc(job.id)}">Storage削除を再試行</button>` : ""}</article>`).join("") || '<p class="muted">Reset履歴はありません。</p>'}</div></section>`;
+      resetRoot.querySelectorAll(".retry-storage").forEach((button) => button.onclick = async () => {
+        try {
+          const job = (resetJobs || []).find((row) => row.id === button.dataset.jobId);
+          const pending = job.storage_failed_paths?.length ? job.storage_failed_paths : job.storage_paths;
+          const result = await cleanupStorage(job.id, pending);
+          message(result.failed.length ? "一部のStorage削除に失敗しました。再試行できます。" : "Storage削除が完了しました。");
+          await renderResetTool();
+        } catch (error) { failure(error); }
+      });
+      resetRoot.querySelector("#previewReset").onclick = async () => {
+        const raw = resetRoot.querySelector("#resetTarget").value;
+        if (!raw) return failure("対象を選択してください。");
+        const [eventId, memberId] = raw.split("|");
+        const { data: preview, error: previewError } = await supabase.rpc("maintenance_preview_exhibition_test_reset_v1", { p_event_id: eventId, p_member_id: memberId });
+        if (previewError) return failure(previewError);
+        const counts = Object.entries(preview.counts || {}).map(([key, value]) => `<span>${esc(key)} ${esc(value)}</span>`).join("");
+        resetRoot.querySelector("#resetPreview").innerHTML = `<section class="stack"><h3>Preview</h3><dl><dt>Event</dt><dd>${esc(preview.eventName)}</dd><dt>Member</dt><dd>${esc(preview.memberNo)}／${esc(preview.email)}</dd><dt>Entry</dt><dd>${esc(preview.entryId || "なし")}</dd><dt>Audit</dt><dd>${esc(preview.auditCount)}件</dd><dt>Storage</dt><dd>${esc(preview.storageObjects?.length || 0)}件</dd><dt>Shift</dt><dd>保持されます</dd></dl><div class="summary-strip">${counts}</div>${preview.canReset ? '<div class="notice">DB側の禁止条件は検出されませんでした。</div>' : `<div class="notice error"><strong>Resetできません。</strong><ul>${(preview.blockers || []).map((item) => `<li>${esc(item)}</li>`).join("")}</ul></div>`}${preview.canReset ? `<form id="executeReset" class="form-grid"><label>Event名を再入力<input name="event_name" required autocomplete="off"></label><label>Member emailを再入力<input name="member_email" type="email" required autocomplete="off"></label><label>確認文字列<input name="confirmation" required placeholder="RESET" autocomplete="off"></label><label class="full">実行理由<textarea name="reason" required maxlength="2000" rows="3"></textarea></label><div class="notice error full">この操作は取り消せません。正式履歴と対象画像を削除します。</div><div class="actions full"><button class="danger">写真展テストデータを完全リセット</button></div></form>` : ""}</section>`;
+        const form = resetRoot.querySelector("#executeReset");
+        if (!form) return;
+        form.onsubmit = async (event) => {
+          event.preventDefault();
+          const values = Object.fromEntries(new FormData(form));
+          if (values.event_name !== preview.eventName || values.member_email.trim().toLowerCase() !== preview.email || values.confirmation !== "RESET") return failure("Event名、Member email、RESETの入力を確認してください。");
+          const selected = (targets || []).find((row) => row.eventId === eventId && row.memberId === memberId);
+          if (selected?.email !== currentEmail && !confirm("自分以外の部員データを完全リセットします。本当に続行しますか？")) return;
+          if (!confirm(`「${preview.eventName}」の ${preview.email} に関する写真展データを完全削除します。続行しますか？`)) return;
+          try {
+            const { data: executed, error: executeError } = await supabase.rpc("maintenance_execute_exhibition_test_reset_v1", { p_event_id: eventId, p_member_id: memberId, p_preview_token: preview.previewToken, p_reason: values.reason });
+            if (executeError) throw executeError;
+            const cleaned = await cleanupStorage(executed.jobId, executed.storageObjects || []);
+            message(cleaned.failed.length ? "DB Resetは完了しました。Storage削除の一部は再試行が必要です。" : "DBとStorageのResetが完了しました。");
+            await renderResetTool();
+          } catch (error) { failure(error); }
+        };
+      };
+    };
+    await renderResetTool();
     const showNew = () => { centerMode="new"; center.innerHTML=`<h2>新規作成</h2>${maintenanceForm()}`; bindForm(null); updateTabs(); };
     const showHistory = () => {
       centerMode="history";
