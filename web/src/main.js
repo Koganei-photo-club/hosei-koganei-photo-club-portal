@@ -17,6 +17,7 @@ let overdueChecked = false;
 let adminGenreTab = "meeting";
 let authRenderGeneration = 0;
 let authRenderTask = null;
+let pendingExhibitionActionTarget = null;
 
 const esc = (value) => {
   const node = document.createElement("div");
@@ -93,6 +94,28 @@ function setupExhibitionMyPageNavigation() {
     button.disabled = !target;
     button.onclick = () => target?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
+}
+
+function focusPendingExhibitionAction() {
+  const pending = pendingExhibitionActionTarget;
+  if (!pending) return;
+  pendingExhibitionActionTarget = null;
+  const sectionIds = {
+      work: "v2WorkManager",
+      caption: "v2CaptionManager",
+      smartphone: "smartphoneWorkManager",
+    },
+    section = document.querySelector(`#${sectionIds[pending.section] || ""}`),
+    selector = pending.section === "caption"
+      ? `.v2-caption-card[data-work-id="${CSS.escape(pending.workId || "")}"]`
+      : pending.section === "smartphone"
+        ? `.smartphone-work-card[data-id="${CSS.escape(pending.smartphoneWorkId || "")}"]`
+        : `.v2-work-card[data-id="${CSS.escape(pending.workId || "")}"]`,
+    card = section?.querySelector(selector);
+  (card || section)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  if (!card) return;
+  card.classList.add("required-action-target");
+  window.setTimeout(() => card.classList.remove("required-action-target"), 4000);
 }
 
 function adminReviewMessage(workId, text, error = false, caption = false) {
@@ -443,18 +466,21 @@ async function renderPortal(context, maintenance = null) {
       })),
     });
     let exhibitionEntries = {};
-    let waitlistEntries = [], waitlistOffers = [];
+    let waitlistEntries = [], waitlistOffers = [], exhibitionActions = [];
     if (context.member) {
-      const [{ data: entries, error: entryError }, { data: waiting, error: waitingError }, { data: offers, error: offersError }] = await Promise.all([
+      const [{ data: entries, error: entryError }, { data: waiting, error: waitingError }, { data: offers, error: offersError }, { data: requiredActions, error: requiredActionsError }] = await Promise.all([
         supabase.from("exhibition_entries").select("event_id,status,exhibition_works(status,orientation,print_size,publication_consent)").eq("member_id", context.member.id),
         supabase.from("event_waitlist_entries").select("*").eq("member_id", context.member.id).order("created_at", { ascending: false }),
         supabase.from("event_waitlist_offers").select("*").eq("member_id", context.member.id).eq("status", "pending"),
+        supabase.rpc("get_my_exhibition_required_actions_v1"),
       ]);
       if (entryError) throw entryError;
       if (waitingError) throw waitingError;
       if (offersError) throw offersError;
+      if (requiredActionsError) throw requiredActionsError;
       waitlistEntries = waiting || [];
       waitlistOffers = offers || [];
+      exhibitionActions = requiredActions || [];
       exhibitionEntries = Object.fromEntries(
         (entries || []).map((entry) => [entry.event_id, entry]),
       );
@@ -514,14 +540,47 @@ async function renderPortal(context, maintenance = null) {
         waiting = latestWaitlist[event.id]?.status === "waiting",
         availability = availabilityByEvent[event.id],
         full = Boolean(availability?.isFull),
-        card = { event, response, state, waiting, full };
+        card = { event, response, state, waiting, full, deadline: offerByEvent[event.id]?.response_deadline || null };
       if (actionable) categories.action.push(card);
       else if (past && joined) categories.past.push(card);
       else if (!past && joined) categories.joined.push(card);
       else if (!past && (event.genre === "exhibition" || !response || waiting || response.cancelled_at)) categories.available.push(card);
     });
+    exhibitionActions.forEach((action) => categories.action.push({ exhibitionAction: action, deadline: action.deadline }));
+    categories.action.sort((a, b) => {
+      const aTime = a.deadline ? new Date(a.deadline).getTime() : Number.POSITIVE_INFINITY,
+        bTime = b.deadline ? new Date(b.deadline).getTime() : Number.POSITIVE_INFINITY;
+      return aTime - bTime || Number(a.exhibitionAction?.priority || 0) - Number(b.exhibitionAction?.priority || 0);
+    });
     categories.past.sort((a, b) => new Date(b.event.starts_at) - new Date(a.event.starts_at));
-    const cardHtml = ({ event, response, state, waiting, full }) => `<a class="card" href="#/event/${event.id}"><div><span class="tag">${eventLabel(event)}</span><h3>${esc(event.title)}</h3><p>${fmt(event.starts_at)}・${esc(event.place)}</p>${full ? '<p class="capacity-warning">定員に達しました</p>' : ""}${waiting ? '<p class="status">キャンセル待ち登録済み</p>' : event.genre === "exhibition" && state ? `<p class="status">${state}</p>` : response ? `<p class="status">${response.cancelled_at ? "キャンセル済み・再参加可能" : `回答済み：${esc(response.attendance)}`}</p>` : ""}</div><strong>→</strong></a>`;
+    const actionLabels = {
+        regular_work_correction: "修正が必要です",
+        regular_work_reedit: "再編集・再提出が必要です",
+        caption_correction: "キャプション修正が必要です",
+        caption_reedit: "キャプションの再編集・再提出が必要です",
+        caption_missing: "キャプション登録が必要です",
+        caption_stale: "キャプション再確認が必要です",
+        smartphone_work_correction: "修正が必要です",
+        smartphone_work_reedit: "再編集・再提出が必要です",
+      },
+      problemLabels = {
+        original: "原画像", title: "作品名", orientation: "向き", print_size: "プリントサイズ",
+        physical_dimensions: "壁面占有サイズ", publication_consent: "Web掲載同意", display_name: "表示名",
+        english_title: "英語作品名", medium: "媒体", camera: "Camera", lens: "Lens", film: "Film",
+        description: "Description", instagram_qr: "Instagram QR", smartphone_confirmation: "スマートフォン撮影確認",
+        ai_declaration: "AI・合成申告", other: "その他",
+      },
+      exhibitionActionCardHtml = (action) => {
+        const subject = action.smartphone_work_id
+            ? `スマホ作品 #${action.smartphone_sort_order}`
+            : `作品「${action.work_title || "名称未設定"}」`,
+          title = `${subject}の${actionLabels[action.action_type] || "対応が必要です"}`,
+          fields = (action.problem_fields || []).map((field) => problemLabels[field] || "確認項目").join("・");
+        return `<a class="card required-action-card" href="#/event/${action.event_id}" data-required-action="true" data-section="${esc(action.section)}" data-work-id="${esc(action.work_id || "")}" data-smartphone-work-id="${esc(action.smartphone_work_id || "")}"><div><span class="tag">写真展・回答が必要</span><h3>${esc(title)}</h3><p>${esc(action.event_title)}</p>${fields ? `<p class="required-action-fields">対象項目：${esc(fields)}</p>` : ""}${action.reason ? `<p class="required-action-reason">管理者からの連絡：${esc(action.reason)}</p>` : ""}${action.deadline ? `<p class="status">対応期限：${fmt(action.deadline)}</p>` : ""}</div><strong>→</strong></a>`;
+      },
+      cardHtml = ({ event, response, state, waiting, full, exhibitionAction }) => exhibitionAction
+        ? exhibitionActionCardHtml(exhibitionAction)
+        : `<a class="card" href="#/event/${event.id}"><div><span class="tag">${eventLabel(event)}</span><h3>${esc(event.title)}</h3><p>${fmt(event.starts_at)}・${esc(event.place)}</p>${full ? '<p class="capacity-warning">定員に達しました</p>' : ""}${waiting ? '<p class="status">キャンセル待ち登録済み</p>' : event.genre === "exhibition" && state ? `<p class="status">${state}</p>` : response ? `<p class="status">${response.cancelled_at ? "キャンセル済み・再参加可能" : `回答済み：${esc(response.attendance)}`}</p>` : ""}</div><strong>→</strong></a>`;
     const sectionRoot = document.querySelector("#eventSections"), sections = [
       ["action", "ACTION REQUIRED", "回答が必要です"], ["joined", "JOINED EVENTS", "参加申込済みのイベント"], ["available", "AVAILABLE EVENTS", "参加可能なイベント"], ["past", "PAST EVENTS", "過去に参加したイベント"],
     ];
@@ -534,6 +593,13 @@ async function renderPortal(context, maintenance = null) {
       extras.forEach((item) => item.classList.toggle("hidden", !expanding));
       button.textContent = expanding ? "表示数を減らす" : "もっと見る";
     });
+    document.querySelectorAll("[data-required-action]").forEach((link) => link.addEventListener("click", () => {
+      pendingExhibitionActionTarget = {
+        section: link.dataset.section,
+        workId: link.dataset.workId,
+        smartphoneWorkId: link.dataset.smartphoneWorkId,
+      };
+    }));
     await renderExhibitionHub();
     await renderArchives(context.member?.id);
   } catch (error) {
@@ -958,6 +1024,7 @@ async function renderExhibitionApplicationV2(event, context) {
     }
     await renderExhibitionShiftMember(event);
     setupExhibitionMyPageNavigation();
+    requestAnimationFrame(() => requestAnimationFrame(focusPendingExhibitionAction));
   } catch (error) {
     failure(error);
   }
