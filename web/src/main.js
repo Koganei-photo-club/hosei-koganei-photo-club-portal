@@ -2700,12 +2700,19 @@ function layoutItemHeading(item) {
 const placementDisplayItemId = (placement) =>
   placement.work_id || placement.display_item_id;
 
-async function renderExhibitionSimulator(event, preferredLayoutId = null) {
+async function renderExhibitionSimulator(
+  event,
+  preferredLayoutId = null,
+  shouldScroll = true,
+) {
   const root = document.querySelector("#participantAdmin");
+  const previousScrollY = window.scrollY;
   document.querySelector("#editor").classList.add("hidden");
   root.classList.remove("hidden");
-  root.innerHTML = "<p>展示シミュレータを読み込んでいます…</p>";
-  root.scrollIntoView({ behavior: "smooth" });
+  if (shouldScroll) {
+    root.innerHTML = "<p>展示シミュレータを読み込んでいます…</p>";
+    root.scrollIntoView({ behavior: "smooth" });
+  }
   try {
     const [venueResult, workResult, layoutResult, candidateResult, groupResult] = await Promise.all([
       supabase
@@ -2794,7 +2801,7 @@ async function renderExhibitionSimulator(event, preferredLayoutId = null) {
             .eq("id", event.id);
           if (error) throw error;
           event.exhibition_venue_id = venueId;
-          await renderExhibitionSimulator(event);
+          await renderExhibitionSimulator(event, null, false);
           message("写真展で使用する会場を設定しました。");
         } catch (error) {
           failure(error);
@@ -2858,7 +2865,7 @@ async function renderExhibitionSimulator(event, preferredLayoutId = null) {
             },
           );
         if (error) return failure(error);
-        await renderExhibitionSimulator(event, currentLayout?.id);
+        await renderExhibitionSimulator(event, currentLayout?.id, false);
         message("スマホ集合展示の占有外寸を保存しました。");
       };
     }
@@ -2876,7 +2883,7 @@ async function renderExhibitionSimulator(event, preferredLayoutId = null) {
           notes: values.notes.trim(),
         });
       if (error) return failure(error);
-      await renderExhibitionSimulator(event, currentLayout?.id);
+      await renderExhibitionSimulator(event, currentLayout?.id, false);
       message("壁面を追加しました。");
     };
     root.querySelectorAll(".dimension-row").forEach((form) => {
@@ -2892,12 +2899,12 @@ async function renderExhibitionSimulator(event, preferredLayoutId = null) {
             })
             .eq("id", form.dataset.workId);
         if (error) return failure(error);
-        await renderExhibitionSimulator(event, currentLayout?.id);
+        await renderExhibitionSimulator(event, currentLayout?.id, false);
         message("作品の占有外寸を保存しました。");
       };
     });
     root.querySelector("#layoutSelect").onchange = (change) =>
-      renderExhibitionSimulator(event, change.target.value || null);
+      renderExhibitionSimulator(event, change.target.value || null, false);
     root.querySelector("#layoutForm").onsubmit = async (submit) => {
       submit.preventDefault();
       const name = new FormData(submit.currentTarget).get("name").trim();
@@ -2913,7 +2920,7 @@ async function renderExhibitionSimulator(event, preferredLayoutId = null) {
         .select()
         .single();
       if (error) return failure(error);
-      await renderExhibitionSimulator(event, data.id);
+      await renderExhibitionSimulator(event, data.id, false);
       message("新しい配置案を作成しました。");
     };
     root.querySelectorAll(".place-work").forEach((button) => {
@@ -2938,11 +2945,18 @@ async function renderExhibitionSimulator(event, preferredLayoutId = null) {
           viewing_order: placements.length + 1,
         });
         if (error) return failure(error);
-        await renderExhibitionSimulator(event, currentLayout.id);
+        await renderExhibitionSimulator(event, currentLayout.id, false);
         message(`作品を「${wall.name}」へ配置しました。`);
       };
     });
-    setupPlacementControls(root, event, currentLayout, walls, workById);
+    setupPlacementControls(
+      root,
+      event,
+      currentLayout,
+      walls,
+      workById,
+      placements,
+    );
     root.querySelectorAll(".placed-work[data-preview-path]").forEach(
       async (item) => {
         const { data, error } = await supabase.storage
@@ -2984,7 +2998,7 @@ async function renderExhibitionSimulator(event, preferredLayoutId = null) {
           { p_layout_id: currentLayout.id },
         );
         if (error) return failure(error);
-        await renderExhibitionSimulator(event, data.layoutId);
+        await renderExhibitionSimulator(event, data.layoutId, false);
         message(
           `${data.name} v${data.versionNo}を作成し、${data.copiedPlacements}件の配置を複製しました。`,
         );
@@ -2996,7 +3010,7 @@ async function renderExhibitionSimulator(event, preferredLayoutId = null) {
           { p_layout_id: currentLayout.id, p_status: status },
         );
         if (error) return failure(error);
-        await renderExhibitionSimulator(event, currentLayout.id);
+        await renderExhibitionSimulator(event, currentLayout.id, false);
         message(success);
       };
       root.querySelector("#reviewLayout")?.addEventListener("click", () =>
@@ -3019,7 +3033,7 @@ async function renderExhibitionSimulator(event, preferredLayoutId = null) {
         if (reason === null || !reason.trim()) return;
         const { data, error } = await supabase.rpc("admin_finalize_exhibition_layout_v2", { p_layout_id: currentLayout.id, p_reason: reason.trim() });
         if (error) return failure(error);
-        await renderExhibitionSimulator(event, currentLayout.id);
+        await renderExhibitionSimulator(event, currentLayout.id, false);
         message(`Layout Plan v${data.version}を確定しました。新規採番 ${data.assignedDisplayNumbers}点`);
       });
       root.querySelector("#draftLayout")?.addEventListener("click", () =>
@@ -3047,13 +3061,15 @@ async function renderExhibitionSimulator(event, preferredLayoutId = null) {
         setTimeout(() => document.body.classList.remove("printing-layout"), 1500);
       };
     }
+    if (!shouldScroll)
+      requestAnimationFrame(() => window.scrollTo({ top: previousScrollY }));
   } catch (error) {
     failure(error);
   }
 }
 
 function renderWallCanvas(wall, placements, workById) {
-  return `<section class="wall-panel"><div class="wall-panel-head"><h4>${esc(wall.name)}</h4><span>${wall.width_mm} × ${wall.height_mm} mm</span></div><div class="wall-canvas" data-wall-id="${wall.id}" data-wall-width="${wall.width_mm}" data-wall-height="${wall.height_mm}" style="--wall-ratio:${wall.width_mm}/${wall.height_mm};background:${esc(wall.background_color)}">${placements.map((placement) => { const work = workById[placementDisplayItemId(placement)]; if (!work) return ""; const left = Number(placement.x_mm) / Number(wall.width_mm) * 100, top = (Number(wall.height_mm) - Number(placement.top_from_floor_mm)) / Number(wall.height_mm) * 100, width = Number(work.occupied_width_mm) / Number(wall.width_mm) * 100, height = Number(work.occupied_height_mm) / Number(wall.height_mm) * 100; return `<button type="button" class="placed-work ${placement.locked ? "is-locked" : ""}" data-placement-id="${placement.id}" ${work.preview_image_path ? `data-preview-path="${esc(work.preview_image_path)}"` : ""} style="left:${left}%;top:${top}%;width:${width}%;height:${height}%;z-index:${placement.z_order}" title="${esc(work.title)}"><strong>${placement.viewing_order ? `${placement.viewing_order}. ` : ""}${layoutItemHeading(work)}</strong></button>`; }).join("")}</div><div class="placement-list">${placements.map((placement) => { const work = workById[placementDisplayItemId(placement)]; return work ? `<form class="placement-row" data-placement-id="${placement.id}" data-work-id="${work.id}"><strong>${layoutItemHeading(work)}</strong>${placement.accepted_work_snapshot_id && placement.accepted_work_snapshot_id !== work.current_accepted_snapshot_id ? '<span class="notice error">Work Snapshotが更新されています</span>' : ""}<label>鑑賞順<input type="number" name="viewing_order" min="1" step="1" value="${placement.viewing_order || ""}" required></label><label>左端 x<input type="number" name="x_mm" min="0" step="1" value="${placement.x_mm}"></label><label>床から上端<input type="number" name="top_from_floor_mm" min="0" step="1" value="${placement.top_from_floor_mm}"></label><label class="lock-label"><input type="checkbox" name="locked" ${placement.locked ? "checked" : ""}>固定</label>${work.item_type !== "smartphone_group" && placement.accepted_work_snapshot_id !== work.current_accepted_snapshot_id ? '<button type="button" class="secondary refresh-placement-snapshot">現在の物理仕様を再確認</button>' : ""}<button class="secondary save-placement">保存</button><button type="button" class="danger remove-placement">配置解除</button></form>` : ""; }).join("")}</div></section>`;
+  return `<section class="wall-panel"><div class="wall-panel-head"><h4>${esc(wall.name)}</h4><span>${wall.width_mm} × ${wall.height_mm} mm</span></div><div class="wall-canvas" data-wall-id="${wall.id}" data-wall-width="${wall.width_mm}" data-wall-height="${wall.height_mm}" style="--wall-ratio:${wall.width_mm}/${wall.height_mm};background:${esc(wall.background_color)}">${placements.map((placement) => { const work = workById[placementDisplayItemId(placement)]; if (!work) return ""; const left = Number(placement.x_mm) / Number(wall.width_mm) * 100, top = (Number(wall.height_mm) - Number(placement.top_from_floor_mm)) / Number(wall.height_mm) * 100, width = Number(work.occupied_width_mm) / Number(wall.width_mm) * 100, height = Number(work.occupied_height_mm) / Number(wall.height_mm) * 100; return `<button type="button" class="placed-work ${placement.locked ? "is-locked" : ""}" data-placement-id="${placement.id}" data-base-title="${esc(work.title || "")}" ${work.preview_image_path ? `data-preview-path="${esc(work.preview_image_path)}"` : ""} style="left:${left}%;top:${top}%;width:${width}%;height:${height}%;z-index:${placement.z_order}" title="${esc(work.title)}"><strong>${placement.viewing_order ? `${placement.viewing_order}. ` : ""}${layoutItemHeading(work)}</strong></button>`; }).join("")}</div><div class="placement-list">${placements.map((placement) => { const work = workById[placementDisplayItemId(placement)]; return work ? `<form class="placement-row" data-placement-id="${placement.id}" data-work-id="${work.id}"><strong>${layoutItemHeading(work)}</strong>${placement.accepted_work_snapshot_id && placement.accepted_work_snapshot_id !== work.current_accepted_snapshot_id ? '<span class="notice error">Work Snapshotが更新されています</span>' : ""}<label>鑑賞順<input type="number" name="viewing_order" min="1" step="1" value="${placement.viewing_order || ""}" required></label><label>左端 x<input type="number" name="x_mm" min="0" step="1" value="${placement.x_mm}"></label><label>床から上端<input type="number" name="top_from_floor_mm" min="0" step="1" value="${placement.top_from_floor_mm}"></label><label class="lock-label"><input type="checkbox" name="locked" ${placement.locked ? "checked" : ""}>固定</label>${work.item_type !== "smartphone_group" && placement.accepted_work_snapshot_id !== work.current_accepted_snapshot_id ? '<button type="button" class="secondary refresh-placement-snapshot">現在の物理仕様を再確認</button>' : ""}<button class="secondary save-placement">保存</button><button type="button" class="danger remove-placement">配置解除</button></form>` : ""; }).join("")}</div></section>`;
 }
 
 function addWallGuides(root) {
@@ -3123,18 +3139,70 @@ function markPlacementOverlaps(root, placements, workById) {
   return count;
 }
 
-function setupPlacementControls(root, event, layout, walls, workById) {
+function syncPlacementDom(root, placement, workById) {
+  const form = root.querySelector(
+      `.placement-row[data-placement-id="${placement.id}"]`,
+    ),
+    item = root.querySelector(
+      `.placed-work[data-placement-id="${placement.id}"]`,
+    ),
+    canvas = item?.closest(".wall-canvas"),
+    work = workById[placementDisplayItemId(placement)];
+  if (form) {
+    form.elements.x_mm.value = placement.x_mm;
+    form.elements.top_from_floor_mm.value = placement.top_from_floor_mm;
+    form.elements.viewing_order.value = placement.viewing_order;
+    form.elements.locked.checked = Boolean(placement.locked);
+  }
+  if (!item || !canvas || !work) return;
+  const wallWidth = Number(canvas.dataset.wallWidth),
+    wallHeight = Number(canvas.dataset.wallHeight);
+  item.style.left = `${(Number(placement.x_mm) / wallWidth) * 100}%`;
+  item.style.top = `${((wallHeight - Number(placement.top_from_floor_mm)) / wallHeight) * 100}%`;
+  item.style.zIndex = placement.z_order;
+  item.querySelector("strong").innerHTML = `${placement.viewing_order ? `${placement.viewing_order}. ` : ""}${layoutItemHeading(work)}`;
+}
+
+function refreshPlacementOverlaps(root, placements, workById) {
+  root.querySelectorAll(".placed-work").forEach((item) => {
+    item.classList.remove("has-overlap");
+    item.title = item.dataset.baseTitle || "";
+  });
+  const count = markPlacementOverlaps(root, placements, workById),
+    notice = root.querySelector(".overlap-notice");
+  if (notice) {
+    notice.classList.toggle("error", count > 0);
+    notice.textContent = count
+      ? `作品の重なりを${count}組検出しました。赤枠の作品と座標を確認してください。`
+      : "作品同士の重なりは検出されていません。";
+  }
+}
+
+function setupPlacementControls(
+  root,
+  event,
+  layout,
+  walls,
+  workById,
+  placements,
+) {
   if (!layout) return;
   const readOnly = ["approved", "archived"].includes(layout.status);
   const savePlacement = async (form, quiet = false) => {
     const work = workById[form.dataset.workId],
+      placement = placements.find(
+        (item) => item.id === form.dataset.placementId,
+      ),
       wall = walls.find((item) => item.id === form.closest(".wall-panel").querySelector(".wall-canvas").dataset.wallId),
       x = Number(form.elements.x_mm.value),
       top = Number(form.elements.top_from_floor_mm.value);
     if (x < 0 || x + Number(work.occupied_width_mm) > Number(wall.width_mm)) throw new Error("作品が壁面の左右端を超えています。");
     if (top > Number(wall.height_mm) || top - Number(work.occupied_height_mm) < 0) throw new Error("作品が壁面の上下端を超えています。");
-    const { error } = await supabase.from("exhibition_placements").update({ x_mm: x, top_from_floor_mm: top, viewing_order: Number(form.elements.viewing_order.value), locked: form.elements.locked.checked }).eq("id", form.dataset.placementId);
+    const { data, error } = await supabase.from("exhibition_placements").update({ x_mm: x, top_from_floor_mm: top, viewing_order: Number(form.elements.viewing_order.value), locked: form.elements.locked.checked }).eq("id", form.dataset.placementId).select().single();
     if (error) throw error;
+    if (placement) Object.assign(placement, data);
+    syncPlacementDom(root, data, workById);
+    refreshPlacementOverlaps(root, placements, workById);
     if (!quiet) message("配置座標を保存しました。");
   };
   root.querySelectorAll(".placement-row").forEach((form) => {
@@ -3146,18 +3214,29 @@ function setupPlacementControls(root, event, layout, walls, workById) {
       };
     updateLockLabel();
     if (readOnly) return;
-    form.onsubmit = async (submit) => { submit.preventDefault(); try { await savePlacement(form); await renderExhibitionSimulator(event, layout.id); } catch (error) { failure(error); } };
+    form.onsubmit = async (submit) => {
+      submit.preventDefault();
+      try {
+        await savePlacement(form);
+      } catch (error) {
+        const placement = placements.find(
+          (item) => item.id === form.dataset.placementId,
+        );
+        if (placement) syncPlacementDom(root, placement, workById);
+        failure(error);
+      }
+    };
     form.querySelector(".remove-placement").onclick = async () => {
       if (!confirm("この作品を壁面から外しますか？作品登録自体は削除されません。")) return;
       const { error } = await supabase.from("exhibition_placements").update({ status: "removed" }).eq("id", form.dataset.placementId);
       if (error) return failure(error);
-      await renderExhibitionSimulator(event, layout.id);
+      await renderExhibitionSimulator(event, layout.id, false);
       message("作品を配置から外しました。");
     };
     form.querySelector(".refresh-placement-snapshot")?.addEventListener("click", async () => {
       const { error } = await supabase.rpc("admin_refresh_exhibition_placement_snapshot_v2", { p_placement_id: form.dataset.placementId });
       if (error) return failure(error);
-      await renderExhibitionSimulator(event, layout.id);
+      await renderExhibitionSimulator(event, layout.id, false);
       message("Placementを現在のAccepted Work Snapshotへ更新しました。");
     });
     form.elements.locked.onchange = async () => {
@@ -3178,6 +3257,10 @@ function setupPlacementControls(root, event, layout, walls, workById) {
         failure(error);
         return;
       }
+      const placement = placements.find(
+        (entry) => entry.id === form.dataset.placementId,
+      );
+      if (placement) placement.locked = locked;
       message(locked ? "配置を固定しました。" : "配置の固定を解除しました。");
     };
   });
@@ -3196,7 +3279,20 @@ function setupPlacementControls(root, event, layout, walls, workById) {
         item.style.left = `${x / wallWidth * 100}%`;
         item.style.top = `${(wallHeight - top) / wallHeight * 100}%`;
       };
-      item.onpointerup = async () => { item.onpointermove = null; try { await savePlacement(form, true); await renderExhibitionSimulator(event, layout.id); message("ドラッグ後の配置座標を保存しました。"); } catch (error) { failure(error); await renderExhibitionSimulator(event, layout.id); } };
+      item.onpointerup = async () => {
+        item.onpointermove = null;
+        try {
+          await savePlacement(form, true);
+          message("ドラッグ後の配置座標を保存しました。");
+        } catch (error) {
+          const placement = placements.find(
+            (entry) => entry.id === form.dataset.placementId,
+          );
+          if (placement) syncPlacementDom(root, placement, workById);
+          refreshPlacementOverlaps(root, placements, workById);
+          failure(error);
+        }
+      };
     };
   });
 }
