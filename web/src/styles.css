@@ -38,6 +38,10 @@ dl{display:grid;grid-template-columns:minmax(88px,130px) 1fr;gap:5px 14px}dt{fon
 @media(max-width:720px){.shift-preference-row{grid-template-columns:1fr}.exhibition-mypage-nav{overflow-x:auto;flex-wrap:nowrap}.exhibition-mypage-nav button{flex:0 0 auto;white-space:nowrap}.caption-admin-heading{flex-direction:column}.caption-details{grid-template-columns:1fr}.caption-details dd{margin-bottom:8px}.caption-admin-actions button{flex:1 1 100%}.agreement-dialog,.review-dialog{width:calc(100vw - 20px);max-height:92dvh}.agreement-dialog-head,.review-dialog-head{align-items:flex-start;padding:14px}.agreement-dialog-body,.review-dialog-body{padding:14px}.review-field-options{grid-template-columns:1fr}.agreement-scroll{max-height:56dvh}.agreement-manager-actions>*{flex:1 1 180px}}
 
 .admin-smartphone-section{margin-top:20px;padding-top:16px;border-top:1px solid var(--line)}
+.admin-smartphone-card{grid-template-columns:minmax(0,1fr)}
+.admin-smartphone-card .admin-work-copy{min-width:0}
+.admin-smartphone-history-actions{justify-content:flex-start;margin:0 0 16px}
+.withdrawn-status{color:var(--muted)}
 .smartphone-work-card .smartphone-terms{margin-top:16px}
 .smartphone-work-card .agreement-scroll{max-height:160px}
 @media(max-width:720px){.archive-work-image{height:clamp(280px,88vw,420px)}.archive-work-info{grid-template-rows:1.5rem auto 2rem auto}.archive-work-info>h3{display:block;min-height:0;overflow:visible}}
