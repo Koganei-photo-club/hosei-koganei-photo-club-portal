@@ -2922,6 +2922,12 @@ async function renderExhibitionParticipants(event) {
       "afterbegin",
       '<button id="processV2Deadlines" class="secondary">期限処理を実行</button><button id="showV2Export" class="secondary">Master Export / Publication</button><button id="showV2Actual" class="secondary">Actual実展示記録</button><button id="showV2Archive" class="secondary">Archive</button>',
     );
+    root.querySelector(".entry-heading").insertAdjacentHTML(
+      "afterend",
+      event.site_status === "published"
+        ? '<div class="notice"><strong>案内ページ公開中</strong><p>一般向け写真展サイトの案内ページを公開しています。募集・シフト・作品Publicationの公開状態とは独立しています。</p></div>'
+        : '<div class="notice"><strong>案内ページは下書きです</strong><p>作品Publicationがなくても、写真展情報だけを先行公開できます。募集・シフト・作品Publicationは公開されません。</p><div class="actions"><button id="publishV2GuideOverview">案内ページを公開</button></div></div>',
+    );
     root.querySelector("#assignDisplayNumbers").disabled = true;
     root.querySelector("#exportExhibitionManifest").disabled = true;
     root.querySelector("#exportExhibitionManifest").title = "Workflow v2では不変Master Exportを使用してください。";
@@ -2933,6 +2939,23 @@ async function renderExhibitionParticipants(event) {
       if (error) return failure(error);
       await renderExhibitionParticipants(event); message(`期限処理が完了しました（Draft取下げ ${data.draftWorksWithdrawn || 0}件）。`);
     };
+    root.querySelector("#publishV2GuideOverview")?.addEventListener("click", async () => {
+      if (!confirm("一般向け写真展サイトの案内ページを公開しますか？\n\n・一般ユーザーが写真展案内を閲覧できるようになります\n・作品Publicationがない場合、作品は準備中と表示されます\n・出展募集は公開されません\n・シフトは公開されません")) return;
+      const { error } = await supabase.rpc("admin_publish_exhibition_guide_v2", { p_event_id: event.id });
+      if (error) return failure(error);
+      event.site_status = "published";
+      await renderExhibitionParticipants(event);
+      message("一般向け写真展案内ページを公開しました。");
+    });
+    root.querySelector("#showV2Export")?.addEventListener("click", () =>
+      renderAdminExhibitionExportV2(event, root),
+    );
+    root.querySelector("#showV2Actual")?.addEventListener("click", () =>
+      renderAdminExhibitionActualV2(event, root),
+    );
+    root.querySelector("#showV2Archive")?.addEventListener("click", () =>
+      renderAdminExhibitionArchiveV2(event, root),
+    );
   }
   const list = root.querySelector("#exhibitorList");
   if (!entries.length) {
@@ -3313,15 +3336,6 @@ async function renderExhibitionParticipants(event) {
   );
   if (Number(event.exhibition_workflow_version) === 2) {
     await renderAdminCaptionsV2(event, root, visibleWorks);
-    root.querySelector("#showV2Export")?.addEventListener("click", () =>
-      renderAdminExhibitionExportV2(event, root),
-    );
-    root.querySelector("#showV2Actual")?.addEventListener("click", () =>
-      renderAdminExhibitionActualV2(event, root),
-    );
-    root.querySelector("#showV2Archive")?.addEventListener("click", () =>
-      renderAdminExhibitionArchiveV2(event, root),
-    );
   }
 }
 
@@ -3434,7 +3448,7 @@ async function renderAdminExhibitionExportV2(event, root) {
     await renderAdminExhibitionExportV2(event, root); message("一般公開を終了しました。");
   });
   panel.querySelector("#publishV2Guide")?.addEventListener("click", async () => {
-    if (!confirm("作品Publicationの完成前でも、安全な写真展案内情報だけを一般公開しますか？")) return;
+    if (!confirm("一般向け写真展サイトの案内ページを公開しますか？\n\n・一般ユーザーが写真展案内を閲覧できるようになります\n・作品Publicationがない場合、作品は準備中と表示されます\n・出展募集は公開されません\n・シフトは公開されません")) return;
     const { error } = await supabase.rpc("admin_publish_exhibition_guide_v2", { p_event_id: event.id });
     if (error) return failure(error);
     await renderAdminExhibitionExportV2(event, root); message("一般向け写真展案内ページを公開しました。");
