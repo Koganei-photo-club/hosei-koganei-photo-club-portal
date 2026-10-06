@@ -2691,6 +2691,15 @@ async function downloadStorageFile(bucket, path, fileName) {
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
+function layoutItemHeading(item) {
+  if (item.item_type === "smartphone_group")
+    return `${item.display_no ? `No.${esc(item.display_no)} ` : ""}${esc(item.title || "スマートフォン撮影写真作品")}`;
+  return `${item.display_no ? `No.${esc(item.display_no)}` : `作品${item.sort_order}`} ${esc(item.title || "作品名未入力")}`;
+}
+
+const placementDisplayItemId = (placement) =>
+  placement.work_id || placement.display_item_id;
+
 async function renderExhibitionSimulator(event, preferredLayoutId = null) {
   const root = document.querySelector("#participantAdmin");
   document.querySelector("#editor").classList.add("hidden");
@@ -2698,7 +2707,7 @@ async function renderExhibitionSimulator(event, preferredLayoutId = null) {
   root.innerHTML = "<p>展示シミュレータを読み込んでいます…</p>";
   root.scrollIntoView({ behavior: "smooth" });
   try {
-    const [venueResult, workResult, layoutResult] = await Promise.all([
+    const [venueResult, workResult, layoutResult, candidateResult, groupResult] = await Promise.all([
       supabase
         .from("exhibition_venues")
         .select("*,exhibition_walls(*)")
@@ -2714,15 +2723,48 @@ async function renderExhibitionSimulator(event, preferredLayoutId = null) {
         .select("*")
         .eq("event_id", event.id)
         .order("updated_at", { ascending: false }),
+      Number(event.exhibition_workflow_version) === 2
+        ? supabase.rpc("admin_get_exhibition_layout_candidates_v1", {
+            p_event_id: event.id,
+          })
+        : Promise.resolve({ data: null, error: null }),
+      Number(event.exhibition_workflow_version) === 2 && event.smartphone_exhibition_enabled
+        ? supabase
+            .from("exhibition_smartphone_display_groups")
+            .select("*")
+            .eq("event_id", event.id)
+            .maybeSingle()
+        : Promise.resolve({ data: null, error: null }),
     ]);
     if (venueResult.error) throw venueResult.error;
     if (workResult.error) throw workResult.error;
     if (layoutResult.error) throw layoutResult.error;
+    if (candidateResult.error) throw candidateResult.error;
+    if (groupResult.error) throw groupResult.error;
     const venues = venueResult.data || [],
-      works = (workResult.data || [])
-        .filter((work) => Number(event.exhibition_workflow_version) !== 2 || work.workflow_state === "accepted")
-        .map((work) => Number(event.exhibition_workflow_version) === 2 && work.current_accepted_snapshot ? ({ ...work, orientation: work.current_accepted_snapshot.orientation, print_size: work.current_accepted_snapshot.print_size, print_size_detail: work.current_accepted_snapshot.print_size_detail, occupied_width_mm: work.current_accepted_snapshot.occupied_width_mm, occupied_height_mm: work.current_accepted_snapshot.occupied_height_mm }) : work),
+      regularWorks = workResult.data || [],
+      works = Number(event.exhibition_workflow_version) === 2
+        ? (candidateResult.data || []).map((item) => {
+            const regular = regularWorks.find((work) => work.id === item.regular_work_id);
+            return {
+              ...regular,
+              id: item.display_item_id,
+              display_item_id: item.display_item_id,
+              item_type: item.item_type,
+              regular_work_id: item.regular_work_id,
+              smartphone_group_id: item.smartphone_group_id,
+              title: item.label,
+              occupied_width_mm: item.width_mm,
+              occupied_height_mm: item.height_mm,
+              display_no: item.display_no,
+              current_accepted_snapshot_id: item.accepted_work_snapshot_id,
+              preview_image_path: item.preview_image_path,
+              sort_order: item.sort_order,
+            };
+          })
+        : regularWorks,
       layouts = layoutResult.data || [],
+      smartphoneGroup = groupResult.data,
       venue = venues.find((item) => item.id === event.exhibition_venue_id);
     if (!venue) {
       root.innerHTML = `<div class="entry-heading"><div><span class="tag">EXHIBITION LAYOUT</span><h2>${esc(event.exhibition_title || event.title)}｜展示シミュレータ</h2></div></div><div class="notice">最初に、この写真展で使用する会場を選択または登録してください。</div><form id="venueSetupForm" class="form-grid simulator-setup"><label class="full">登録済み会場<select name="venue_id"><option value="">新しい会場を登録する</option>${venues.filter((item) => item.status === "active").map((item) => `<option value="${item.id}">${esc(item.name)}</option>`).join("")}</select></label><label>新しい会場名<input name="name" placeholder="例：EAST館 202"></label><label>所在地・建物情報<input name="address"></label><label class="full">会場メモ<textarea name="notes" rows="2"></textarea></label><div class="actions full"><button>この会場を使用する</button></div></form>`;
@@ -2779,10 +2821,47 @@ async function renderExhibitionSimulator(event, preferredLayoutId = null) {
       if (error) throw error;
       placements = data || [];
     }
-    const workById = Object.fromEntries(works.map((work) => [work.id, work])),
-      placedIds = new Set(placements.map((placement) => placement.work_id)),
+    const workById = Object.fromEntries(
+        works.flatMap((work) => [
+          [work.id, work],
+          ...(work.regular_work_id ? [[work.regular_work_id, work]] : []),
+        ]),
+      ),
+      placedIds = new Set(
+        placements.map((placement) =>
+          Number(event.exhibition_workflow_version) === 2
+            ? placement.display_item_id || placement.work_id
+            : placement.work_id,
+        ),
+      ),
       unplaced = works.filter((work) => !placedIds.has(work.id));
-    root.innerHTML = `<div class="entry-heading"><div><span class="tag">EXHIBITION LAYOUT PLAN</span><h2>${esc(event.exhibition_title || event.title)}｜展示シミュレータ</h2><p class="muted">会場：${esc(venue.name)}／これは展示予定です。実際の展示記録ではありません。</p></div></div><section class="simulator-section"><div class="section-head compact"><h3>1. 壁面</h3></div><div class="wall-summary">${walls.length ? walls.map((wall) => `<span>${esc(wall.name)}：${wall.width_mm} × ${wall.height_mm} mm</span>`).join("") : '<span class="muted">壁面が未登録です。</span>'}</div><form id="wallForm" class="form-grid compact-form"><label>壁面名<input name="name" required placeholder="例：正面壁面"></label><label>表示順<input type="number" name="display_order" min="1" required value="${walls.length + 1}"></label><label>幅（mm）<input type="number" name="width_mm" min="1" step="0.01" required></label><label>高さ（mm）<input type="number" name="height_mm" min="1" step="0.01" required></label><label>壁面色<input type="color" name="background_color" value="#FFFFFF"></label><label class="full">注意事項<input name="notes" placeholder="例：右端500mmは配電盤"></label><div class="actions full"><button>壁面を追加</button></div></form></section><section class="simulator-section"><div class="section-head compact"><h3>2. 作品の物理仕様</h3><p>${Number(event.exhibition_workflow_version) === 2 ? "確認済みWork Snapshotの物理仕様です。変更はWork再編集から行ってください。" : "単写真は用紙寸法が初期入力されています。額装・組み写真は実際に壁を占有する外寸へ修正してください。"}</p></div><div class="dimension-list">${works.length ? works.map((work) => `<form class="dimension-row" data-work-id="${work.id}"><div><strong>${work.display_no ? `No.${esc(work.display_no)}` : `作品${work.sort_order}`} ${esc(work.title || "作品名未入力")}</strong><small>${esc(work.exhibition_entries?.members?.name || "")}／${esc(printSizeLabel(work.print_size, work.print_size_detail))}${work.current_accepted_snapshot_id ? `／Snapshot ${esc(work.current_accepted_snapshot_id.slice(0, 8))}` : ""}</small></div><label>幅<input type="number" name="width" min="1" step="0.01" value="${work.occupied_width_mm || ""}" required ${Number(event.exhibition_workflow_version) === 2 ? "disabled" : ""}></label><label>高さ<input type="number" name="height" min="1" step="0.01" value="${work.occupied_height_mm || ""}" required ${Number(event.exhibition_workflow_version) === 2 ? "disabled" : ""}></label>${Number(event.exhibition_workflow_version) === 2 ? "" : '<button class="secondary">外寸を保存</button>'}</form>`).join("") : '<p class="muted">配置可能な確認済み作品がありません。</p>'}</div></section><section class="simulator-section"><div class="section-head compact"><h3>3. Layout Plan</h3></div><div class="layout-toolbar"><select id="layoutSelect"><option value="">配置案を選択</option>${layouts.map((layout) => `<option value="${layout.id}" ${layout.id === currentLayout?.id ? "selected" : ""}>${esc(layout.name)} v${layout.version_no}${layout.is_current ? "（現在案）" : ""}</option>`).join("")}</select><form id="layoutForm" class="inline-field"><input name="name" required placeholder="例：第1案"><button>新しい配置案を作成</button></form></div>${currentLayout ? `<div class="layout-status"><strong>${esc(currentLayout.name)} v${currentLayout.version_no}</strong><span>${currentLayout.status === "approved" ? "確定済みPlan" : currentLayout.status === "review" ? "確認中" : currentLayout.status === "archived" ? "保管" : "下書き"}</span></div><div class="unplaced-works"><h4>未配置作品（${unplaced.length}点）</h4>${unplaced.length ? unplaced.map((work) => `<div class="unplaced-work"><span>${work.display_no ? `No.${esc(work.display_no)}` : `作品${work.sort_order}`} ${esc(work.title || "作品名未入力")}</span>${work.occupied_width_mm && walls.length ? `<select data-wall-choice><option value="">配置先の壁面</option>${walls.filter((wall) => wall.usable).map((wall) => `<option value="${wall.id}">${esc(wall.name)}</option>`).join("")}</select><button class="place-work secondary" data-work-id="${work.id}">配置</button>` : '<small class="muted">占有外寸または壁面が未設定です。</small>'}</div>`).join("") : '<p class="muted">すべての作品が配置されています。</p>'}</div><div class="wall-canvases">${walls.map((wall) => renderWallCanvas(wall, placements.filter((item) => item.wall_id === wall.id), workById)).join("")}</div>` : '<div class="notice">配置案を作成すると、作品を壁面へ配置できます。</div>'}</section>`;
+    const regularDimensionWorks = works.filter(
+      (work) => work.item_type !== "smartphone_group",
+    );
+    root.innerHTML = `<div class="entry-heading"><div><span class="tag">EXHIBITION LAYOUT PLAN</span><h2>${esc(event.exhibition_title || event.title)}｜展示シミュレータ</h2><p class="muted">会場：${esc(venue.name)}／これは展示予定です。実際の展示記録ではありません。</p></div></div><section class="simulator-section"><div class="section-head compact"><h3>1. 壁面</h3></div><div class="wall-summary">${walls.length ? walls.map((wall) => `<span>${esc(wall.name)}：${wall.width_mm} × ${wall.height_mm} mm</span>`).join("") : '<span class="muted">壁面が未登録です。</span>'}</div><form id="wallForm" class="form-grid compact-form"><label>壁面名<input name="name" required placeholder="例：正面壁面"></label><label>表示順<input type="number" name="display_order" min="1" required value="${walls.length + 1}"></label><label>幅（mm）<input type="number" name="width_mm" min="1" step="0.01" required></label><label>高さ（mm）<input type="number" name="height_mm" min="1" step="0.01" required></label><label>壁面色<input type="color" name="background_color" value="#FFFFFF"></label><label class="full">注意事項<input name="notes" placeholder="例：右端500mmは配電盤"></label><div class="actions full"><button>壁面を追加</button></div></form></section><section class="simulator-section"><div class="section-head compact"><h3>2. 展示物の物理仕様</h3><p>${Number(event.exhibition_workflow_version) === 2 ? "通常作品はAccepted Work Snapshot、スマホ集合展示は管理者設定の占有外寸を使用します。" : "単写真は用紙寸法が初期入力されています。額装・組み写真は実際に壁を占有する外寸へ修正してください。"}</p></div><div class="dimension-list">${regularDimensionWorks.length ? regularDimensionWorks.map((work) => `<form class="dimension-row" data-work-id="${work.id}"><div><strong>${layoutItemHeading(work)}</strong><small>${esc(work.exhibition_entries?.members?.name || "")}／${esc(printSizeLabel(work.print_size, work.print_size_detail))}${work.current_accepted_snapshot_id ? `／Snapshot ${esc(work.current_accepted_snapshot_id.slice(0, 8))}` : ""}</small></div><label>幅<input type="number" name="width" min="1" step="0.01" value="${work.occupied_width_mm || ""}" required ${Number(event.exhibition_workflow_version) === 2 ? "disabled" : ""}></label><label>高さ<input type="number" name="height" min="1" step="0.01" value="${work.occupied_height_mm || ""}" required ${Number(event.exhibition_workflow_version) === 2 ? "disabled" : ""}></label>${Number(event.exhibition_workflow_version) === 2 ? "" : '<button class="secondary">外寸を保存</button>'}</form>`).join("") : '<p class="muted">配置可能な確認済み通常作品がありません。</p>'}</div></section><section class="simulator-section"><div class="section-head compact"><h3>3. Layout Plan</h3></div><div class="layout-toolbar"><select id="layoutSelect"><option value="">配置案を選択</option>${layouts.map((layout) => `<option value="${layout.id}" ${layout.id === currentLayout?.id ? "selected" : ""}>${esc(layout.name)} v${layout.version_no}${layout.is_current ? "（現在案）" : ""}</option>`).join("")}</select><form id="layoutForm" class="inline-field"><input name="name" required placeholder="例：第1案"><button>新しい配置案を作成</button></form></div>${currentLayout ? `<div class="layout-status"><strong>${esc(currentLayout.name)} v${currentLayout.version_no}</strong><span>${currentLayout.status === "approved" ? "確定済みPlan" : currentLayout.status === "review" ? "確認中" : currentLayout.status === "archived" ? "保管" : "下書き"}</span></div><div class="unplaced-works"><h4>未配置展示物（${unplaced.length}点）</h4>${unplaced.length ? unplaced.map((work) => `<div class="unplaced-work"><span>${layoutItemHeading(work)}</span>${work.occupied_width_mm && walls.length ? `<select data-wall-choice><option value="">配置先の壁面</option>${walls.filter((wall) => wall.usable).map((wall) => `<option value="${wall.id}">${esc(wall.name)}</option>`).join("")}</select><button class="place-work secondary" data-work-id="${work.id}">配置</button>` : '<small class="muted">占有外寸または壁面が未設定です。</small>'}</div>`).join("") : '<p class="muted">すべての展示物が配置されています。</p>'}</div><div class="wall-canvases">${walls.map((wall) => renderWallCanvas(wall, placements.filter((item) => item.wall_id === wall.id), workById)).join("")}</div>` : '<div class="notice">配置案を作成すると、展示物を壁面へ配置できます。</div>'}</section>`;
+
+    if (Number(event.exhibition_workflow_version) === 2 && event.smartphone_exhibition_enabled) {
+      root.querySelector(".dimension-list").insertAdjacentHTML(
+        "afterbegin",
+        `<form id="smartphoneGroupDimensions" class="dimension-row"><div><strong>スマートフォン撮影写真作品</strong><small>集合展示全体が壁面を占有する外寸です。</small></div><label>幅<input type="number" name="width" min="1" step="0.01" value="${smartphoneGroup?.width_mm || ""}" required></label><label>高さ<input type="number" name="height" min="1" step="0.01" value="${smartphoneGroup?.height_mm || ""}" required></label><button class="secondary">集合展示外寸を保存</button></form>`,
+      );
+      root.querySelector("#smartphoneGroupDimensions").onsubmit = async (submit) => {
+        submit.preventDefault();
+        const values = Object.fromEntries(new FormData(submit.currentTarget)),
+          { error } = await supabase.rpc(
+            "admin_upsert_exhibition_smartphone_display_group_v1",
+            {
+              p_event_id: event.id,
+              p_display_name: "スマートフォン撮影写真作品",
+              p_width_mm: Number(values.width),
+              p_height_mm: Number(values.height),
+            },
+          );
+        if (error) return failure(error);
+        await renderExhibitionSimulator(event, currentLayout?.id);
+        message("スマホ集合展示の占有外寸を保存しました。");
+      };
+    }
 
     root.querySelector("#wallForm").onsubmit = async (submit) => {
       submit.preventDefault();
@@ -2847,7 +2926,11 @@ async function renderExhibitionSimulator(event, preferredLayoutId = null) {
           return failure("作品の占有外寸が壁面より大きいため配置できません。");
         const { error } = await supabase.from("exhibition_placements").insert({
           layout_id: currentLayout.id,
-          work_id: work.id,
+          display_item_id: work.display_item_id || null,
+          work_id:
+            work.item_type === "smartphone_group"
+              ? null
+              : work.regular_work_id || work.id,
           wall_id: wall.id,
           x_mm: 0,
           top_from_floor_mm: Number(wall.height_mm),
@@ -2970,7 +3053,7 @@ async function renderExhibitionSimulator(event, preferredLayoutId = null) {
 }
 
 function renderWallCanvas(wall, placements, workById) {
-  return `<section class="wall-panel"><div class="wall-panel-head"><h4>${esc(wall.name)}</h4><span>${wall.width_mm} × ${wall.height_mm} mm</span></div><div class="wall-canvas" data-wall-id="${wall.id}" data-wall-width="${wall.width_mm}" data-wall-height="${wall.height_mm}" style="--wall-ratio:${wall.width_mm}/${wall.height_mm};background:${esc(wall.background_color)}">${placements.map((placement) => { const work = workById[placement.work_id]; if (!work) return ""; const left = Number(placement.x_mm) / Number(wall.width_mm) * 100, top = (Number(wall.height_mm) - Number(placement.top_from_floor_mm)) / Number(wall.height_mm) * 100, width = Number(work.occupied_width_mm) / Number(wall.width_mm) * 100, height = Number(work.occupied_height_mm) / Number(wall.height_mm) * 100; return `<button type="button" class="placed-work ${placement.locked ? "is-locked" : ""}" data-placement-id="${placement.id}" ${work.preview_image_path ? `data-preview-path="${esc(work.preview_image_path)}"` : ""} style="left:${left}%;top:${top}%;width:${width}%;height:${height}%;z-index:${placement.z_order}" title="${esc(work.title)}"><strong>${placement.viewing_order ? `${placement.viewing_order}. ` : ""}${work.display_no ? `No.${esc(work.display_no)}` : `作品${work.sort_order}`}</strong><span>${esc(work.title || "")}</span></button>`; }).join("")}</div><div class="placement-list">${placements.map((placement) => { const work = workById[placement.work_id]; return work ? `<form class="placement-row" data-placement-id="${placement.id}" data-work-id="${work.id}"><strong>${work.display_no ? `No.${esc(work.display_no)}` : `作品${work.sort_order}`} ${esc(work.title || "")}</strong>${placement.accepted_work_snapshot_id && placement.accepted_work_snapshot_id !== work.current_accepted_snapshot_id ? '<span class="notice error">Work Snapshotが更新されています</span>' : ""}<label>鑑賞順<input type="number" name="viewing_order" min="1" step="1" value="${placement.viewing_order || ""}" required></label><label>左端 x<input type="number" name="x_mm" min="0" step="1" value="${placement.x_mm}"></label><label>床から上端<input type="number" name="top_from_floor_mm" min="0" step="1" value="${placement.top_from_floor_mm}"></label><label class="lock-label"><input type="checkbox" name="locked" ${placement.locked ? "checked" : ""}>固定</label>${placement.accepted_work_snapshot_id !== work.current_accepted_snapshot_id ? '<button type="button" class="secondary refresh-placement-snapshot">現在の物理仕様を再確認</button>' : ""}<button class="secondary save-placement">保存</button><button type="button" class="danger remove-placement">配置解除</button></form>` : ""; }).join("")}</div></section>`;
+  return `<section class="wall-panel"><div class="wall-panel-head"><h4>${esc(wall.name)}</h4><span>${wall.width_mm} × ${wall.height_mm} mm</span></div><div class="wall-canvas" data-wall-id="${wall.id}" data-wall-width="${wall.width_mm}" data-wall-height="${wall.height_mm}" style="--wall-ratio:${wall.width_mm}/${wall.height_mm};background:${esc(wall.background_color)}">${placements.map((placement) => { const work = workById[placementDisplayItemId(placement)]; if (!work) return ""; const left = Number(placement.x_mm) / Number(wall.width_mm) * 100, top = (Number(wall.height_mm) - Number(placement.top_from_floor_mm)) / Number(wall.height_mm) * 100, width = Number(work.occupied_width_mm) / Number(wall.width_mm) * 100, height = Number(work.occupied_height_mm) / Number(wall.height_mm) * 100; return `<button type="button" class="placed-work ${placement.locked ? "is-locked" : ""}" data-placement-id="${placement.id}" ${work.preview_image_path ? `data-preview-path="${esc(work.preview_image_path)}"` : ""} style="left:${left}%;top:${top}%;width:${width}%;height:${height}%;z-index:${placement.z_order}" title="${esc(work.title)}"><strong>${placement.viewing_order ? `${placement.viewing_order}. ` : ""}${layoutItemHeading(work)}</strong></button>`; }).join("")}</div><div class="placement-list">${placements.map((placement) => { const work = workById[placementDisplayItemId(placement)]; return work ? `<form class="placement-row" data-placement-id="${placement.id}" data-work-id="${work.id}"><strong>${layoutItemHeading(work)}</strong>${placement.accepted_work_snapshot_id && placement.accepted_work_snapshot_id !== work.current_accepted_snapshot_id ? '<span class="notice error">Work Snapshotが更新されています</span>' : ""}<label>鑑賞順<input type="number" name="viewing_order" min="1" step="1" value="${placement.viewing_order || ""}" required></label><label>左端 x<input type="number" name="x_mm" min="0" step="1" value="${placement.x_mm}"></label><label>床から上端<input type="number" name="top_from_floor_mm" min="0" step="1" value="${placement.top_from_floor_mm}"></label><label class="lock-label"><input type="checkbox" name="locked" ${placement.locked ? "checked" : ""}>固定</label>${work.item_type !== "smartphone_group" && placement.accepted_work_snapshot_id !== work.current_accepted_snapshot_id ? '<button type="button" class="secondary refresh-placement-snapshot">現在の物理仕様を再確認</button>' : ""}<button class="secondary save-placement">保存</button><button type="button" class="danger remove-placement">配置解除</button></form>` : ""; }).join("")}</div></section>`;
 }
 
 function addWallGuides(root) {
@@ -3001,7 +3084,7 @@ function markPlacementOverlaps(root, placements, workById) {
   let count = 0;
   for (let firstIndex = 0; firstIndex < placements.length; firstIndex += 1) {
     const first = placements[firstIndex],
-      firstWork = workById[first.work_id];
+      firstWork = workById[placementDisplayItemId(first)];
     if (!firstWork) continue;
     for (
       let secondIndex = firstIndex + 1;
@@ -3009,7 +3092,7 @@ function markPlacementOverlaps(root, placements, workById) {
       secondIndex += 1
     ) {
       const second = placements[secondIndex],
-        secondWork = workById[second.work_id];
+        secondWork = workById[placementDisplayItemId(second)];
       if (!secondWork || first.wall_id !== second.wall_id) continue;
       const horizontal =
           Number(first.x_mm) <
@@ -3829,7 +3912,7 @@ async function renderAdminExhibitionActualV2(event, root) {
     if (error) return failure(error);
     actualBlockers = (data || []).filter((item) => !item.ready);
   }
-  panel.innerHTML = `<div class="entry-heading"><div><span class="tag">WORKFLOW V2 ACTUAL</span><h2>Actual Exhibition Record</h2><p class="muted"><strong>Plan</strong>は展示予定、<strong>Actual</strong>は会場で実際に展示した事実です。自動確定されません。</p></div></div>${!draft ? `<section><h3>Actual Draftを作成</h3><label>基準となる確定Layout<select id="actualSourceFinal"><option value="">選択してください</option>${finals.map((finalization) => `<option value="${finalization.id}">Layout Finalization v${finalization.finalization_version}（${fmt(finalization.finalized_at)}）</option>`).join("")}</select></label><div class="actions"><button id="initializeActual" ${finals.length ? "" : "disabled"}>PlanからActual Draftを作成</button></div></section>` : `<section><div class="section-head"><h3>Actual Draft v${draft.version_no}</h3><span class="status">未確認 ${draftItems.filter((item) => item.actual_state === "unconfirmed").length}点</span></div><p class="muted">Source Plan：${esc(draft.source_layout_finalization_id)}${draft.correction_of_id ? `／訂正元：${esc(draft.correction_of_id)}` : ""}</p><div class="stack">${draftItems.map((item) => { const work = works[item.work_id] || {}, plannedWall = walls.find((wall) => wall.id === item.planned_wall_id), availableWorkSnapshots = workSnapshots.filter((snapshot) => snapshot.work_id === item.work_id && (snapshot.id === item.work_submission_snapshot_id || acceptedWorkSnapshots.has(snapshot.id))), compatibleCaptions = captionSnapshots.filter((snapshot) => snapshot.work_id === item.work_id && acceptedCaptionSnapshots.has(snapshot.id)); return `<form class="actual-item-card admin-row" data-item-id="${item.id}"><div><strong>No.${item.display_no} ${esc(work.title || "")}</strong><p><span class="tag">PLAN</span> ${esc(plannedWall?.name || item.planned_wall_id)}／左 ${item.planned_x_mm}mm／床から上端 ${item.planned_top_from_floor_mm}mm</p><label>Actual状態<select name="actual_state"><option value="unconfirmed" ${item.actual_state === "unconfirmed" ? "selected" : ""}>未確認</option><option value="exhibited" ${item.actual_state === "exhibited" ? "selected" : ""}>実際に展示</option><option value="not_exhibited" ${item.actual_state === "not_exhibited" ? "selected" : ""}>展示しなかった</option></select></label><label>実展示Work Snapshot<select name="work_snapshot">${availableWorkSnapshots.map((snapshot) => `<option value="${snapshot.id}" ${snapshot.id === item.work_submission_snapshot_id ? "selected" : ""}>Work Snapshot v${snapshot.version_no}｜${snapshot.id.slice(0, 8)}</option>`).join("")}</select></label><label>対応Caption Snapshot<select name="caption_snapshot"><option value="">なし（例外理由が必要）</option>${compatibleCaptions.map((snapshot) => `<option value="${snapshot.id}" data-work-snapshot="${snapshot.work_submission_snapshot_id}" ${snapshot.id === item.caption_submission_snapshot_id ? "selected" : ""}>Caption v${snapshot.version_no}｜${snapshot.id.slice(0, 8)}</option>`).join("")}</select></label></div><div class="form-grid"><label>Actual壁面<select name="wall_id"><option value="">選択</option>${walls.map((wall) => `<option value="${wall.id}" ${wall.id === item.actual_wall_id ? "selected" : ""}>${esc(wall.name)}</option>`).join("")}</select></label><label>左端 mm<input name="x_mm" type="number" min="0" step="0.01" value="${item.actual_x_mm ?? ""}"></label><label>床から上端 mm<input name="top_mm" type="number" min="0" step="0.01" value="${item.actual_top_from_floor_mm ?? ""}"></label><label>重なり順<input name="z_order" type="number" min="0" value="${item.actual_z_order ?? 0}"></label><label class="full"><input name="caption_exception" type="checkbox" ${item.caption_exception ? "checked" : ""}>Captionなしの例外として記録</label><label class="full">理由・現場メモ<textarea name="note" rows="2">${esc(item.note || "")}</textarea></label><button>Actualを保存</button></div></form>`; }).join("")}</div><div class="actions"><button id="finalizeActual" ${draftItems.some((item) => item.actual_state === "unconfirmed") ? "disabled" : ""}>ActualをFINAL確定</button></div></section>`}<section><h3>確定済みActual履歴</h3><div class="stack">${versions.filter((version) => version.state === "finalized").map((version) => { const versionItems = items.filter((item) => item.actual_version_id === version.id); return `<article class="admin-row"><div><strong>Actual v${version.version_no}</strong><p>実展示 ${versionItems.filter((item) => item.actual_state === "exhibited").length}点／非展示 ${versionItems.filter((item) => item.actual_state === "not_exhibited").length}点</p><small>Source Plan ${esc(version.source_layout_finalization_id)}／${fmt(version.finalized_at)}</small></div><button class="secondary correct-actual" data-version-id="${version.id}" data-final-id="${version.source_layout_finalization_id}">訂正版を作成</button></article>`; }).join("") || '<p class="muted">確定済みActualはありません。</p>'}</div></section>`;
+  panel.innerHTML = `<div class="entry-heading"><div><span class="tag">WORKFLOW V2 ACTUAL</span><h2>Actual Exhibition Record</h2><p class="muted"><strong>Plan</strong>は展示予定、<strong>Actual</strong>は会場で実際に展示した事実です。自動確定されません。</p></div></div>${!draft ? `<section><h3>Actual Draftを作成</h3><label>基準となる確定Layout<select id="actualSourceFinal"><option value="">選択してください</option>${finals.map((finalization) => `<option value="${finalization.id}">Layout Finalization v${finalization.finalization_version}（${fmt(finalization.finalized_at)}）</option>`).join("")}</select></label><div class="actions"><button id="initializeActual" ${finals.length ? "" : "disabled"}>PlanからActual Draftを作成</button></div></section>` : `<section><div class="section-head"><h3>Actual Draft v${draft.version_no}</h3><span class="status">未確認 ${draftItems.filter((item) => item.actual_state === "unconfirmed").length}点</span></div><p class="muted">Source Plan：${esc(draft.source_layout_finalization_id)}${draft.correction_of_id ? `／訂正元：${esc(draft.correction_of_id)}` : ""}</p><div class="stack">${draftItems.map((item) => { const isGroup = item.display_item_type === "smartphone_group", work = works[item.work_id] || {}, plannedWall = walls.find((wall) => wall.id === item.planned_wall_id), availableWorkSnapshots = workSnapshots.filter((snapshot) => snapshot.work_id === item.work_id && (snapshot.id === item.work_submission_snapshot_id || acceptedWorkSnapshots.has(snapshot.id))), compatibleCaptions = captionSnapshots.filter((snapshot) => snapshot.work_id === item.work_id && acceptedCaptionSnapshots.has(snapshot.id)); return `<form class="actual-item-card admin-row" data-item-id="${item.id}" data-item-type="${esc(item.display_item_type || "regular_work")}"><div><strong>No.${item.display_no} ${esc(isGroup ? "スマートフォン撮影写真作品" : work.title || "")}</strong>${isGroup ? `<p class="muted">集合展示／構成作品 ${item.smartphone_work_count}点</p>` : ""}<p><span class="tag">PLAN</span> ${esc(plannedWall?.name || item.planned_wall_id)}／左 ${item.planned_x_mm}mm／床から上端 ${item.planned_top_from_floor_mm}mm</p><label>Actual状態<select name="actual_state"><option value="unconfirmed" ${item.actual_state === "unconfirmed" ? "selected" : ""}>未確認</option><option value="exhibited" ${item.actual_state === "exhibited" ? "selected" : ""}>実際に展示</option><option value="not_exhibited" ${item.actual_state === "not_exhibited" ? "selected" : ""}>展示しなかった</option></select></label>${isGroup ? "" : `<label>実展示Work Snapshot<select name="work_snapshot">${availableWorkSnapshots.map((snapshot) => `<option value="${snapshot.id}" ${snapshot.id === item.work_submission_snapshot_id ? "selected" : ""}>Work Snapshot v${snapshot.version_no}｜${snapshot.id.slice(0, 8)}</option>`).join("")}</select></label><label>対応Caption Snapshot<select name="caption_snapshot"><option value="">なし（例外理由が必要）</option>${compatibleCaptions.map((snapshot) => `<option value="${snapshot.id}" data-work-snapshot="${snapshot.work_submission_snapshot_id}" ${snapshot.id === item.caption_submission_snapshot_id ? "selected" : ""}>Caption v${snapshot.version_no}｜${snapshot.id.slice(0, 8)}</option>`).join("")}</select></label>`}</div><div class="form-grid"><label>Actual壁面<select name="wall_id"><option value="">選択</option>${walls.map((wall) => `<option value="${wall.id}" ${wall.id === item.actual_wall_id ? "selected" : ""}>${esc(wall.name)}</option>`).join("")}</select></label><label>左端 mm<input name="x_mm" type="number" min="0" step="0.01" value="${item.actual_x_mm ?? ""}"></label><label>床から上端 mm<input name="top_mm" type="number" min="0" step="0.01" value="${item.actual_top_from_floor_mm ?? ""}"></label><label>重なり順<input name="z_order" type="number" min="0" value="${item.actual_z_order ?? 0}"></label>${isGroup ? "" : `<label class="full"><input name="caption_exception" type="checkbox" ${item.caption_exception ? "checked" : ""}>Captionなしの例外として記録</label>`}<label class="full">理由・現場メモ<textarea name="note" rows="2">${esc(item.note || "")}</textarea></label><button>Actualを保存</button></div></form>`; }).join("")}</div><div class="actions"><button id="finalizeActual" ${draftItems.some((item) => item.actual_state === "unconfirmed") ? "disabled" : ""}>ActualをFINAL確定</button></div></section>`}<section><h3>確定済みActual履歴</h3><div class="stack">${versions.filter((version) => version.state === "finalized").map((version) => { const versionItems = items.filter((item) => item.actual_version_id === version.id); return `<article class="admin-row"><div><strong>Actual v${version.version_no}</strong><p>実展示 ${versionItems.filter((item) => item.actual_state === "exhibited").length}点／非展示 ${versionItems.filter((item) => item.actual_state === "not_exhibited").length}点</p><small>Source Plan ${esc(version.source_layout_finalization_id)}／${fmt(version.finalized_at)}</small></div><button class="secondary correct-actual" data-version-id="${version.id}" data-final-id="${version.source_layout_finalization_id}">訂正版を作成</button></article>`; }).join("") || '<p class="muted">確定済みActualはありません。</p>'}</div></section>`;
   if (actualBlockers.length) {
     panel.querySelector(".entry-heading").insertAdjacentHTML("afterend", `<div class="notice error"><strong>FINAL確定できません。</strong>${actualBlockers.map((item) => `<p>No.${item.display_no}：${esc((item.reasons || []).join("／"))}</p>`).join("")}</div>`);
     panel.querySelector("#finalizeActual")?.setAttribute("disabled", "");
@@ -3841,14 +3924,15 @@ async function renderAdminExhibitionActualV2(event, root) {
     if (error) return failure(error); await renderAdminExhibitionActualV2(event, root); message("Actual Draftを作成しました。各作品の実展示状態を確認してください。");
   });
   panel.querySelectorAll(".actual-item-card").forEach((form) => {
-    const updateCaptions = () => { const workSnapshot = form.work_snapshot.value; [...form.caption_snapshot.options].forEach((option) => { if (option.value) option.hidden = option.dataset.workSnapshot !== workSnapshot; }); if (form.caption_snapshot.selectedOptions[0]?.hidden) form.caption_snapshot.value = ""; };
-    form.work_snapshot.onchange = updateCaptions; updateCaptions();
+    const isGroup = form.dataset.itemType === "smartphone_group", workSnapshotField = form.querySelector('[name="work_snapshot"]'), captionSnapshotField = form.querySelector('[name="caption_snapshot"]'), captionExceptionField = form.querySelector('[name="caption_exception"]');
+    const updateCaptions = () => { if (!workSnapshotField || !captionSnapshotField) return; const workSnapshot = workSnapshotField.value; [...captionSnapshotField.options].forEach((option) => { if (option.value) option.hidden = option.dataset.workSnapshot !== workSnapshot; }); if (captionSnapshotField.selectedOptions[0]?.hidden) captionSnapshotField.value = ""; };
+    if (workSnapshotField) workSnapshotField.onchange = updateCaptions; updateCaptions();
     form.onsubmit = async (submit) => { submit.preventDefault(); const state = form.actual_state.value, exhibited = state === "exhibited";
       const { error } = await supabase.rpc("admin_update_exhibition_actual_item_v2", { p_item_id: form.dataset.itemId, p_actual_state: state,
         p_actual_wall_id: exhibited ? form.wall_id.value || null : null, p_actual_x_mm: exhibited ? Number(form.x_mm.value) : null,
         p_actual_top_from_floor_mm: exhibited ? Number(form.top_mm.value) : null, p_actual_z_order: exhibited ? Number(form.z_order.value) : null,
-        p_work_snapshot_id: form.work_snapshot.value, p_caption_snapshot_id: form.caption_snapshot.value || null,
-        p_caption_exception: exhibited && form.caption_exception.checked, p_note: form.note.value.trim() });
+        p_work_snapshot_id: isGroup ? null : workSnapshotField.value, p_caption_snapshot_id: isGroup ? null : captionSnapshotField.value || null,
+        p_caption_exception: !isGroup && exhibited && captionExceptionField.checked, p_note: form.note.value.trim() });
       if (error) return failure(error); await renderAdminExhibitionActualV2(event, root); message("Actual Itemを保存しました。"); };
   });
   panel.querySelector("#finalizeActual")?.addEventListener("click", async () => { if (!confirm("このActualをFINAL確定しますか？確定後は編集できません。")) return; const reason = prompt("確定メモ（任意）", ""); if (reason === null) return; const { error } = await supabase.rpc("admin_finalize_exhibition_actual_v2", { p_actual_version_id: draft.id, p_reason: reason.trim() }); if (error) return failure(error); await renderAdminExhibitionActualV2(event, root); message("Actual Exhibition Recordを確定しました。"); });
