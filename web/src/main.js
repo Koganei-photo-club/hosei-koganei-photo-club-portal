@@ -60,6 +60,41 @@ function failure(error) {
   );
 }
 
+function sectionMessage(target, text, error = false, scroll = error) {
+  const root = typeof target === "string" ? document.querySelector(target) : target;
+  if (!root) return message(text, error);
+  let box = root.querySelector(":scope > .section-message");
+  if (!box) {
+    box = document.createElement("div");
+    box.className = "section-message notice hidden";
+    box.setAttribute("role", error ? "alert" : "status");
+    box.setAttribute("aria-live", error ? "assertive" : "polite");
+    root.querySelector(".entry-heading")?.insertAdjacentElement("afterend", box) || root.prepend(box);
+  }
+  box.textContent = text;
+  box.classList.remove("hidden");
+  box.classList.toggle("error", error);
+  box.setAttribute("role", error ? "alert" : "status");
+  if (scroll) box.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+const sectionFailure = (target, error) =>
+  sectionMessage(
+    target,
+    typeof error === "string" ? error : error?.message || "処理に失敗しました。",
+    true,
+  );
+
+function setupExhibitionMyPageNavigation() {
+  const nav = document.querySelector(".exhibition-mypage-nav");
+  if (!nav) return;
+  nav.querySelectorAll("button[data-section]").forEach((button) => {
+    const target = document.querySelector(`#${button.dataset.section}`);
+    button.disabled = !target;
+    button.onclick = () => target?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+}
+
 async function boot() {
   if (!configured) {
     layout();
@@ -716,20 +751,20 @@ async function renderExhibitionApplicationV2(event, context) {
       view = document.querySelector("#view");
     hideMessage();
     const lastAcceptance = agreementStatus.acceptances?.at(-1);
-    view.innerHTML = `<nav class="exhibition-mypage-nav"><a href="#exhibitionOverview">概要</a><a href="#exhibitionApplication">出展</a><a href="#v2WorkManager">作品</a><a href="#v2CaptionManager">キャプション</a><a href="#exhibitionShift">シフト</a></nav><section id="exhibitionOverview" class="panel"><span class="tag">EXHIBITION MY PAGE</span><h2>${esc(event.exhibition_title || event.title)}</h2><dl><dt>開催日時</dt><dd>${fmt(event.starts_at)}${event.ends_at ? ` 〜 ${fmt(event.ends_at)}` : ""}</dd><dt>出展申込締切</dt><dd>${fmt(event.exhibition_application_deadline)}</dd><dt>作品提出締切</dt><dd>${fmt(event.exhibition_work_submission_deadline)}</dd><dt>修正期限</dt><dd>${fmt(event.exhibition_revision_deadline)}</dd><dt>キャプション締切</dt><dd>${fmt(event.exhibition_caption_deadline)}</dd><dt>場所</dt><dd>${esc(event.place)}</dd><dt>出展上限</dt><dd>1人 ${event.max_works}作品</dd></dl><p class="copy">${esc(event.details)}</p></section><section id="exhibitionApplication" class="panel exhibition-entry-panel"><div class="entry-heading"><div><span class="tag">YOUR APPLICATION</span><h2>出展申込</h2></div><span class="status">${stateLabel}</span></div><p class="muted">出展申込とシフト希望は独立しています。シフトだけ参加する場合、出展申込は不要です。</p>${agreementStatus.agreementStale ? `<section class="notice error agreement-reagreement"><h3>写真展の出展規約が改定されました</h3><dl><dt>現在同意済み</dt><dd>${esc(lastAcceptance?.referenceKey || "確認できません")}</dd><dt>新しい規約</dt><dd>${esc(agreement.referenceKey)}</dd></dl><div class="agreement-scroll">${esc(agreement.content)}</div><label><input type="checkbox" id="reagreementConfirmed">新しい規約全文を確認し、再同意します</label><div class="actions"><button type="button" id="reagreeApplication">新しい規約に再同意</button></div></section>` : ""}${autoCancelled ? '<div class="notice error">有効な作品がなくなったため申込はSYSTEMにより自動取消されました。復活が必要な場合は幹部へ連絡してください。</div>' : ""}${!applicationOpen && !active && !autoCancelled ? '<div class="notice error">出展申込受付は終了しました。</div>' : ""}${active ? '<div class="notice">出展申込は成立しています。作品は作品提出締切までに、後続の作品提出画面から登録します。</div>' : ""}${active && !workingOpen && !(entry?.revival_deadline && now < new Date(entry.revival_deadline).getTime()) ? '<div class="notice error">作品提出締切を過ぎたため、申込内容は変更できません。</div>' : ""}<form id="applicationForm" class="stack"><label>出展予定作品数<input type="number" name="planned_work_count" min="1" max="${event.max_works}" required value="${entry?.planned_work_count || 1}"><small>予定数です。最終的な提出作品数を固定するものではありません。</small></label><fieldset><legend>作者表示名</legend><label><input type="radio" name="display_name_type" value="real_name" ${initialType === "real_name" ? "checked" : ""}>本名（${esc(context.member.name)}）</label><label><input type="radio" name="display_name_type" value="pseudonym" ${initialType === "pseudonym" ? "checked" : ""}>ペンネーム</label><label id="pseudonymField" class="${initialType === "pseudonym" ? "" : "hidden"}">ペンネーム<input name="display_name_value" maxlength="100" value="${esc(initialType === "pseudonym" ? initialName : "")}"></label></fieldset><label>申込に関する備考（任意）<textarea name="note" maxlength="3000" rows="4">${esc(entry?.note || "")}</textarea></label>${active || autoCancelled ? "" : `<section class="notice agreement"><h3>Application Agreement</h3><p class="muted">${esc(agreement.referenceKey)}／Version ${agreement.versionNo}</p><div class="agreement-scroll">${esc(agreement.content)}</div><p><strong>重要：</strong>作品提出締切時点で正式提出作品が0件の場合、申込はSYSTEMにより自動取消されます。</p><label><input type="checkbox" name="agreement_confirmed" required>同意内容と重要事項を確認し、同意します</label></section>`}<div class="actions">${active || autoCancelled ? "" : `<button type="button" id="saveApplicationDraft" class="secondary" ${canEdit ? "" : "disabled"}>下書き保存</button>`}<button type="submit" id="applicationPrimary" ${canEdit ? "" : "disabled"}>${active ? "変更を保存" : withdrawn ? "再申込内容を確認" : "申込内容を確認"}</button>${active && applicationOpen ? '<button type="button" id="withdrawApplication" class="danger">申込を取り消す</button>' : ""}</div></form><section id="applicationConfirmation" class="stack hidden"></section></section>`;
+    view.innerHTML = `<nav class="exhibition-mypage-nav" aria-label="写真展マイページ内ナビゲーション"><button type="button" data-section="exhibitionOverview">概要</button><button type="button" data-section="exhibitionApplication">出展</button><button type="button" data-section="v2WorkManager">作品</button><button type="button" data-section="v2CaptionManager">キャプション</button><button type="button" data-section="exhibitionShift">シフト</button></nav><section id="exhibitionOverview" class="panel exhibition-scroll-target"><span class="tag">EXHIBITION MY PAGE</span><h2>${esc(event.exhibition_title || event.title)}</h2><dl><dt>開催日時</dt><dd>${fmt(event.starts_at)}${event.ends_at ? ` 〜 ${fmt(event.ends_at)}` : ""}</dd><dt>出展申込締切</dt><dd>${fmt(event.exhibition_application_deadline)}</dd><dt>作品提出締切</dt><dd>${fmt(event.exhibition_work_submission_deadline)}</dd><dt>修正期限</dt><dd>${fmt(event.exhibition_revision_deadline)}</dd><dt>キャプション締切</dt><dd>${fmt(event.exhibition_caption_deadline)}</dd><dt>場所</dt><dd>${esc(event.place)}</dd><dt>出展上限</dt><dd>1人 ${event.max_works}作品</dd></dl><p class="copy">${esc(event.details)}</p></section><section id="exhibitionApplication" class="panel exhibition-entry-panel exhibition-scroll-target"><div class="entry-heading"><div><span class="tag">YOUR APPLICATION</span><h2>出展申込</h2></div><span class="status">${stateLabel}</span></div><div class="section-message notice hidden" role="status" aria-live="polite"></div><p class="muted">出展申込とシフト希望は独立しています。シフトだけ参加する場合、出展申込は不要です。</p>${agreementStatus.agreementStale ? `<section class="notice error agreement-reagreement"><h3>写真展の出展規約が改定されました</h3><dl><dt>現在同意済み</dt><dd>${esc(lastAcceptance?.referenceKey || "確認できません")}</dd><dt>新しい規約</dt><dd>${esc(agreement.referenceKey)}</dd></dl><div class="agreement-scroll">${esc(agreement.content)}</div><label><input type="checkbox" id="reagreementConfirmed">新しい規約全文を確認し、再同意します</label><div class="actions"><button type="button" id="reagreeApplication">新しい規約に再同意</button></div></section>` : ""}${autoCancelled ? '<div class="notice error">有効な作品がなくなったため申込はSYSTEMにより自動取消されました。復活が必要な場合は幹部へ連絡してください。</div>' : ""}${!applicationOpen && !active && !autoCancelled ? '<div class="notice error">出展申込受付は終了しました。</div>' : ""}${active ? '<div class="notice">出展申込は成立しています。作品は作品提出締切までに、後続の作品提出画面から登録します。</div>' : ""}${active && !workingOpen && !(entry?.revival_deadline && now < new Date(entry.revival_deadline).getTime()) ? '<div class="notice error">作品提出締切を過ぎたため、申込内容は変更できません。</div>' : ""}<form id="applicationForm" class="stack"><label>出展予定作品数<input type="number" name="planned_work_count" min="1" max="${event.max_works}" required value="${entry?.planned_work_count || 1}"><small>予定数です。最終的な提出作品数を固定するものではありません。</small></label><fieldset><legend>作者表示名</legend><label><input type="radio" name="display_name_type" value="real_name" ${initialType === "real_name" ? "checked" : ""}>本名（${esc(context.member.name)}）</label><label><input type="radio" name="display_name_type" value="pseudonym" ${initialType === "pseudonym" ? "checked" : ""}>ペンネーム</label><label id="pseudonymField" class="${initialType === "pseudonym" ? "" : "hidden"}">ペンネーム<input name="display_name_value" maxlength="100" value="${esc(initialType === "pseudonym" ? initialName : "")}"></label></fieldset><label>申込に関する備考（任意）<textarea name="note" maxlength="3000" rows="4">${esc(entry?.note || "")}</textarea></label>${active || autoCancelled ? "" : `<section class="notice agreement"><h3>Application Agreement</h3><p class="muted">${esc(agreement.referenceKey)}／Version ${agreement.versionNo}</p><div class="agreement-scroll">${esc(agreement.content)}</div><p><strong>重要：</strong>作品提出締切時点で正式提出作品が0件の場合、申込はSYSTEMにより自動取消されます。</p><label><input type="checkbox" name="agreement_confirmed" required>同意内容と重要事項を確認し、同意します</label></section>`}<div class="actions">${active || autoCancelled ? "" : `<button type="button" id="saveApplicationDraft" class="secondary" ${canEdit ? "" : "disabled"}>下書き保存</button>`}<button type="submit" id="applicationPrimary" ${canEdit ? "" : "disabled"}>${active ? "変更を保存" : withdrawn ? "再申込内容を確認" : "申込内容を確認"}</button>${active && applicationOpen ? '<button type="button" id="withdrawApplication" class="danger">申込を取り消す</button>' : ""}</div></form><section id="applicationConfirmation" class="stack hidden"></section></section>`;
 
     document.querySelector("#reagreeApplication")?.addEventListener("click", async () => {
       if (!document.querySelector("#reagreementConfirmed")?.checked)
-        return failure("新しい規約全文を確認し、再同意欄にチェックしてください。");
+        return sectionFailure("#exhibitionApplication", "新しい規約全文を確認し、再同意欄にチェックしてください。");
       if (!confirm(`${agreement.referenceKey} に再同意しますか？\n当初の同意履歴は変更されず、その後の再同意として記録されます。`)) return;
       const { error } = await supabase.rpc("reagree_exhibition_application_v2", {
         p_event_id: event.id,
         p_expected_agreement_id: agreement.id,
         p_expected_agreement_hash: agreement.contentHash,
       });
-      if (error) return failure(error);
+      if (error) return sectionFailure("#exhibitionApplication", error);
       await renderExhibitionApplicationV2(event, context);
-      message("改定後の出展規約へ再同意しました。");
+      sectionMessage("#exhibitionApplication", "改定後の出展規約へ再同意しました。");
     });
 
     const form = document.querySelector("#applicationForm"),
@@ -757,9 +792,9 @@ async function renderExhibitionApplicationV2(event, context) {
           });
         if (error) throw error;
         await renderExhibitionApplicationV2(event, context);
-        message(withdrawn ? "再申込内容を下書き保存しました。" : "出展申込を下書き保存しました。");
+        sectionMessage("#exhibitionApplication", withdrawn ? "再申込内容を下書き保存しました。" : "出展申込を下書き保存しました。");
       } catch (error) {
-        failure(error);
+        sectionFailure("#exhibitionApplication", error);
       }
     });
 
@@ -801,7 +836,7 @@ async function renderExhibitionApplicationV2(event, context) {
           );
           if (error) throw error;
           await renderExhibitionApplicationV2(event, context);
-          message("申込内容を更新しました。正式申込時のSnapshotは保持されています。");
+          sectionMessage("#exhibitionApplication", "申込内容を更新しました。正式申込時のSnapshotは保持されています。");
           return;
         }
         if (!form.querySelector('[name="agreement_confirmed"]')?.checked)
@@ -831,14 +866,14 @@ async function renderExhibitionApplicationV2(event, context) {
             );
             if (error) throw error;
             await renderExhibitionApplicationV2(event, context);
-            message(withdrawn ? "出展を再申込しました。" : "出展申込を確定しました。");
+            sectionMessage("#exhibitionApplication", withdrawn ? "出展を再申込しました。" : "出展申込を確定しました。");
           } catch (error) {
             button.disabled = false;
-            failure(error);
+            sectionFailure("#exhibitionApplication", error);
           }
         };
       } catch (error) {
-        failure(error);
+        sectionFailure("#exhibitionApplication", error);
       }
     };
     document.querySelector("#withdrawApplication")?.addEventListener("click", async () => {
@@ -852,13 +887,14 @@ async function renderExhibitionApplicationV2(event, context) {
         });
         if (error) throw error;
         await renderExhibitionApplicationV2(event, context);
-        message("出展申込を取り消しました。締切前であれば再申込できます。");
+        sectionMessage("#exhibitionApplication", "出展申込を取り消しました。締切前であれば再申込できます。");
       } catch (error) {
-        failure(error);
+        sectionFailure("#exhibitionApplication", error);
       }
     });
     if (active) await renderExhibitionWorksV2(event, context, entry);
     await renderExhibitionShiftMember(event);
+    setupExhibitionMyPageNavigation();
   } catch (error) {
     failure(error);
   }
@@ -866,7 +902,7 @@ async function renderExhibitionApplicationV2(event, context) {
 
 async function renderExhibitionShiftMember(event) {
   const host = document.querySelector("#view");
-  host.insertAdjacentHTML("beforeend", '<section id="exhibitionShift" class="panel"><p class="muted">シフト情報を読み込んでいます…</p></section>');
+  host.insertAdjacentHTML("beforeend", '<section id="exhibitionShift" class="panel exhibition-scroll-target"><p class="muted">シフト情報を読み込んでいます…</p></section>');
   const root = document.querySelector("#exhibitionShift"),
     { data, error } = await supabase.rpc("get_my_exhibition_shift_workspace_v1", { p_event_id: event.id });
   if (error) {
@@ -876,14 +912,14 @@ async function renderExhibitionShiftMember(event) {
   const preferences = Object.fromEntries((data.preferences || []).map((item) => [item.slot_id, item])),
     assignments = data.assignments || [],
     slots = data.slots || [];
-  root.innerHTML = `<div class="entry-heading"><div><span class="tag">SHIFT</span><h2>シフト希望・確定シフト</h2></div></div><p class="muted">出展申込とは独立しています。出展しない場合もシフト希望だけを提出できます。</p>${data.canSubmitPreferences ? "" : '<div class="notice">シフト希望の受付は終了しています。保存済みの希望と公開シフトは引き続き確認できます。</div>'}<form id="shiftPreferenceForm" class="shift-slot-list">${slots.map((slot) => { const id=slot.id || slot,label=slot.label || slot,p=preferences[id];return `<label class="shift-preference-row"><span>${esc(label)}</span><select data-slot-id="${esc(id)}" data-slot-label="${esc(label)}" ${data.canSubmitPreferences ? "" : "disabled"}><option value="">希望なし</option><option value="preferred" ${p?.preference === "preferred" ? "selected" : ""}>優先して参加可能</option><option value="available" ${p?.preference === "available" ? "selected" : ""}>参加可能</option><option value="unavailable" ${p?.preference === "unavailable" ? "selected" : ""}>参加不可</option></select></label>`;}).join("")}<div class="actions"><button ${data.canSubmitPreferences ? "" : "disabled"}>シフト希望を保存</button></div></form><section class="published-shift"><h3>公開済み確定シフト</h3>${data.publishedVersion ? `<p class="status">シフト v${data.publishedVersion.versionNo}　公開日時：${fmt(data.publishedVersion.publishedAt)}</p><div class="shift-timeline">${slots.map((slot) => { const id=slot.id || slot,label=slot.label || slot,people=assignments.filter((item)=>item.slotId===id);return `<article class="shift-timeline-slot ${people.some((item)=>item.isMine) ? "is-mine" : ""}"><h4>${esc(label)}</h4>${people.length ? `<ul>${people.map((item)=>`<li class="${item.isMine ? "my-shift" : ""}">${esc(item.memberName)}${item.isMine ? "（自分）" : ""}</li>`).join("")}</ul>` : '<p class="muted">割当なし</p>'}</article>`;}).join("")}</div>` : '<div class="notice">確定シフトはまだ公開されていません。</div>'}</section>`;
+  root.innerHTML = `<div class="entry-heading"><div><span class="tag">SHIFT</span><h2>シフト希望・確定シフト</h2></div></div><div class="section-message notice hidden" role="status" aria-live="polite"></div><p class="muted">出展申込とは独立しています。出展しない場合もシフト希望だけを提出できます。</p>${data.canSubmitPreferences ? "" : '<div class="notice">シフト希望の受付は終了しています。保存済みの希望と公開シフトは引き続き確認できます。</div>'}<form id="shiftPreferenceForm" class="shift-slot-list">${slots.map((slot) => { const id=slot.id || slot,label=slot.label || slot,p=preferences[id];return `<label class="shift-preference-row"><span>${esc(label)}</span><select data-slot-id="${esc(id)}" data-slot-label="${esc(label)}" ${data.canSubmitPreferences ? "" : "disabled"}><option value="">希望なし</option><option value="preferred" ${p?.preference === "preferred" ? "selected" : ""}>優先して参加可能</option><option value="available" ${p?.preference === "available" ? "selected" : ""}>参加可能</option><option value="unavailable" ${p?.preference === "unavailable" ? "selected" : ""}>参加不可</option></select></label>`;}).join("")}<div class="actions"><button ${data.canSubmitPreferences ? "" : "disabled"}>シフト希望を保存</button></div></form><section class="published-shift"><h3>公開済み確定シフト</h3>${data.publishedVersion ? `<p class="status">シフト v${data.publishedVersion.versionNo}　公開日時：${fmt(data.publishedVersion.publishedAt)}</p><div class="shift-timeline">${slots.map((slot) => { const id=slot.id || slot,label=slot.label || slot,people=assignments.filter((item)=>item.slotId===id);return `<article class="shift-timeline-slot ${people.some((item)=>item.isMine) ? "is-mine" : ""}"><h4>${esc(label)}</h4>${people.length ? `<ul>${people.map((item)=>`<li class="${item.isMine ? "my-shift" : ""}">${esc(item.memberName)}${item.isMine ? "（自分）" : ""}</li>`).join("")}</ul>` : '<p class="muted">割当なし</p>'}</article>`;}).join("")}</div>` : '<div class="notice">確定シフトはまだ公開されていません。</div>'}</section>`;
   root.querySelector("#shiftPreferenceForm").onsubmit = async (submit) => {
     submit.preventDefault();
     const p_preferences = [...root.querySelectorAll("[data-slot-id]")].filter((select)=>select.value).map((select)=>({slotId:select.dataset.slotId,preference:select.value,note:""}));
     const { error: saveError } = await supabase.rpc("save_my_exhibition_shift_preferences_v1", { p_event_id:event.id,p_preferences });
-    if (saveError) return failure(saveError);
+    if (saveError) return sectionFailure("#exhibitionShift", saveError);
     await renderExhibitionApplicationV2(event, await getContext());
-    message("シフト希望を保存しました。出展申込の状態には影響しません。");
+    sectionMessage("#exhibitionShift", "シフト希望を保存しました。出展申込の状態には影響しません。");
   };
 }
 
@@ -898,7 +934,7 @@ async function renderExhibitionWorksV2(event, context, entry) {
   const host = document.querySelector("#view");
   host.insertAdjacentHTML(
     "beforeend",
-    '<section id="v2WorkManager" class="panel"><div class="entry-heading"><div><span class="tag">WORK SUBMISSION</span><h2>作品提出</h2></div><button id="newV2Work" class="secondary">作品Draftを作成</button></div><p class="muted">キャプション情報は次のPhaseで別途登録します。作品確認済みは最終的な「出展確定」ではありません。</p><div id="v2WorkSummary" class="summary-strip"></div><div id="v2WorkList" class="stack"></div><div class="actions"><button id="submitV2WorkBatch">提出可能な作品をまとめて正式提出</button></div></section>',
+    '<section id="v2WorkManager" class="panel exhibition-scroll-target"><div class="entry-heading"><div><span class="tag">WORK SUBMISSION</span><h2>作品提出</h2></div><button id="newV2Work" class="secondary">作品Draftを作成</button></div><div class="section-message notice hidden" role="status" aria-live="polite"></div><p class="muted">キャプション情報は次のPhaseで別途登録します。作品確認済みは最終的な「出展確定」ではありません。</p><div id="v2WorkSummary" class="summary-strip"></div><div id="v2WorkList" class="stack"></div><div class="actions"><button id="submitV2WorkBatch">提出可能な作品をまとめて正式提出</button></div></section>',
   );
   const root = document.querySelector("#v2WorkManager"),
     [{ data: works, error }, { data: cases, error: casesError }, { data: reviews, error: reviewsError }] =
@@ -967,8 +1003,9 @@ async function renderExhibitionWorksV2(event, context, entry) {
       p_print_size_detail: "", p_occupied_width_mm: null, p_occupied_height_mm: null,
       p_publication_consent: null, p_original_image_path: null, p_original_sha256: null,
     });
-    if (error) return failure(error);
-    renderExhibitionApplicationV2(event, context);
+    if (error) return sectionFailure("#v2WorkManager", error);
+    await renderExhibitionApplicationV2(event, context);
+    sectionMessage("#v2WorkManager", "作品Draftを作成しました。");
   };
   root.querySelectorAll(".v2-work-card").forEach((card) => {
     const work = activeWorks.find((item) => item.id === card.dataset.id),
@@ -996,8 +1033,8 @@ async function renderExhibitionWorksV2(event, context, entry) {
           p_original_image_path: path, p_original_sha256: hash,
         });
         if (error) throw error;
-        await renderExhibitionApplicationV2(event, context); message("作品Draftを保存しました。");
-      } catch (saveError) { failure(saveError); }
+        await renderExhibitionApplicationV2(event, context); sectionMessage("#v2WorkManager", "作品Draftを保存しました。");
+      } catch (saveError) { sectionFailure("#v2WorkManager", saveError); }
     });
     card.querySelector(".withdraw-v2-work").onclick = async () => {
       const accepted = work.workflow_state === "accepted";
@@ -1005,30 +1042,30 @@ async function renderExhibitionWorksV2(event, context, entry) {
       const reason = accepted ? prompt("確認済み作品の取り下げ理由（必須）") : prompt("取り下げ理由（任意）", "");
       if (reason === null) return;
       const { error } = await supabase.rpc("withdraw_exhibition_work_v2", { p_work_id: work.id, p_reason: reason });
-      if (error) return failure(error); renderExhibitionApplicationV2(event, context);
+      if (error) return sectionFailure("#v2WorkManager", error); await renderExhibitionApplicationV2(event, context); sectionMessage("#v2WorkManager", "作品を取り下げました。");
     };
     card.querySelector(".request-reedit")?.addEventListener("click", async () => {
       const reason = prompt("再編集が必要な理由（必須）"); if (!reason) return;
       const { error } = await supabase.rpc("request_exhibition_work_reedit_v2", { p_work_id: work.id, p_reason: reason });
-      if (error) return failure(error); renderExhibitionApplicationV2(event, context);
+      if (error) return sectionFailure("#v2WorkManager", error); await renderExhibitionApplicationV2(event, context); sectionMessage("#v2WorkManager", "再編集を申請しました。");
     });
     card.querySelector(".cancel-reedit")?.addEventListener("click", async () => {
       const { error } = await supabase.rpc("cancel_exhibition_work_reedit_request_v2", { p_case_id: openCase.id });
-      if (error) return failure(error); renderExhibitionApplicationV2(event, context);
+      if (error) return sectionFailure("#v2WorkManager", error); await renderExhibitionApplicationV2(event, context); sectionMessage("#v2WorkManager", "再編集申請を取り消しました。");
     });
     card.querySelector(".restore-accepted")?.addEventListener("click", async () => {
       if (!confirm("変更を破棄し、最後に確認済みとなった内容へ戻しますか？")) return;
       const { error } = await supabase.rpc("cancel_permitted_exhibition_work_reedit_v2", { p_case_id: openCase.id, p_reason: "" });
-      if (error) return failure(error); renderExhibitionApplicationV2(event, context);
+      if (error) return sectionFailure("#v2WorkManager", error); await renderExhibitionApplicationV2(event, context); sectionMessage("#v2WorkManager", "確認済みの内容へ戻しました。");
     });
     card.querySelector(".start-replacement")?.addEventListener("click", async () => {
       if (!confirm("この作品のReplacement Draftを作成しますか？元作品は新作品の正式提出まで維持されます。")) return;
       const { error } = await supabase.rpc("start_exhibition_work_replacement_v2", { p_old_work_id: work.id });
-      if (error) return failure(error); renderExhibitionApplicationV2(event, context);
+      if (error) return sectionFailure("#v2WorkManager", error); await renderExhibitionApplicationV2(event, context); sectionMessage("#v2WorkManager", "差し替え用作品Draftを作成しました。");
     });
     card.querySelector(".cancel-replacement")?.addEventListener("click", async () => {
       const { error } = await supabase.rpc("cancel_exhibition_work_replacement_v2", { p_replacement_work_id: work.id });
-      if (error) return failure(error); renderExhibitionApplicationV2(event, context);
+      if (error) return sectionFailure("#v2WorkManager", error); await renderExhibitionApplicationV2(event, context); sectionMessage("#v2WorkManager", "作品の差し替えを取り消しました。");
     });
   });
   const readyIds = activeWorks.filter(ready).map((work) => work.id);
@@ -1036,9 +1073,9 @@ async function renderExhibitionWorksV2(event, context, entry) {
   root.querySelector("#submitV2WorkBatch").onclick = async () => {
     if (!confirm(`提出可能な${readyIds.length}作品を正式提出しますか？未完成Draftは残ります。`)) return;
     const { data, error } = await supabase.rpc("submit_exhibition_work_batch_v2", { p_event_id: event.id, p_work_ids: readyIds });
-    if (error) return failure(error);
+    if (error) return sectionFailure("#v2WorkManager", error);
     await renderExhibitionApplicationV2(event, context);
-    message(`${data.submittedWorkIds?.length || 0}作品を正式提出しました。`);
+    sectionMessage("#v2WorkManager", `${data.submittedWorkIds?.length || 0}作品を正式提出しました。`);
   };
   await renderExhibitionCaptionsV2(event, context, entry, activeWorks);
 }
@@ -1055,7 +1092,7 @@ async function renderExhibitionCaptionsV2(event, context, entry, works) {
   if (error) throw error;
   if (reviewError) throw reviewError;
   if (caseError) throw caseError;
-  document.querySelector("#view").insertAdjacentHTML("beforeend", '<section id="v2CaptionManager" class="panel"><div class="entry-heading"><div><span class="tag">CAPTION INFORMATION</span><h2>キャプション情報</h2></div></div><p class="muted">作品確認とは別の工程です。正式提出後の変更は再提出・再確認になります。</p><div id="v2CaptionList" class="stack"></div></section>');
+  document.querySelector("#view").insertAdjacentHTML("beforeend", '<section id="v2CaptionManager" class="panel exhibition-scroll-target"><div class="entry-heading"><div><span class="tag">CAPTION INFORMATION</span><h2>キャプション情報</h2></div></div><div class="section-message notice hidden" role="status" aria-live="polite"></div><p class="muted">作品確認とは別の工程です。正式提出後の変更は再提出・再確認になります。</p><div id="v2CaptionList" class="stack"></div></section>');
   const list = document.querySelector("#v2CaptionList");
   eligible.forEach((work) => {
     const caption = (captions || []).find((item) => item.work_id === work.id) || {},
@@ -1069,11 +1106,11 @@ async function renderExhibitionCaptionsV2(event, context, entry, works) {
   const payload = (card, work) => ({ p_work_id: work.id, p_display_name: card.querySelector('[name="display_name"]').value, p_english_title_mode: card.querySelector('[name="english_title_mode"]').value, p_member_english_title: card.querySelector('[name="member_english_title"]').value, p_medium: card.querySelector('[name="medium"]').value, p_medium_details: card.querySelector('[name="medium_details"]').value, p_camera: card.querySelector('[name="camera"]').value, p_lens: card.querySelector('[name="lens"]').value, p_film: card.querySelector('[name="film"]').value, p_description_choice: card.querySelector('[name="description_choice"]').value, p_description_ja: card.querySelector('[name="description_ja"]').value, p_description_en: card.querySelector('[name="description_en"]').value, p_instagram_qr_choice: card.querySelector('[name="instagram_qr_choice"]').value, p_instagram_qr_info: card.querySelector('[name="instagram_qr_info"]').value, p_instagram_qr_path: work.instagram_qr_path || null, p_ai_processing_declaration: card.querySelector(`[name="ai_processing_declaration_${work.id}"]:checked`)?.value || null, p_ai_processing_details: card.querySelector('[name="ai_processing_details"]').value });
   list.querySelectorAll(".v2-caption-card").forEach((card) => {
     const work = eligible.find((item) => item.id === card.dataset.workId);
-    card.querySelector(".save-caption")?.addEventListener("click", async () => { const { error } = await supabase.rpc("save_exhibition_caption_draft_v2", payload(card, work)); if (error) return failure(error); await renderExhibitionApplicationV2(event, context); message("キャプション下書きを保存しました。"); });
-    card.querySelector(".submit-caption")?.addEventListener("click", async () => { const saved = await supabase.rpc("save_exhibition_caption_draft_v2", payload(card, work)); if (saved.error) return failure(saved.error); if (!confirm("この内容を正式提出しますか？提出内容はSnapshotとして保存されます。")) return; const { error } = await supabase.rpc("submit_exhibition_caption_v2", { p_work_id: work.id }); if (error) return failure(error); await renderExhibitionApplicationV2(event, context); message("キャプションを正式提出しました。"); });
-    card.querySelector(".request-caption-reedit")?.addEventListener("click", async () => { const reason = prompt("再編集理由（必須）"); if (!reason) return; const { error } = await supabase.rpc("request_exhibition_caption_reedit_v2", { p_work_id: work.id, p_reason: reason }); if (error) return failure(error); renderExhibitionApplicationV2(event, context); });
-    card.querySelector(".start-stale-caption")?.addEventListener("click", async () => { if (!confirm("以前のCaption履歴を残したまま、現在の作品内容向けの再提出を開始しますか？")) return; const { error } = await supabase.rpc("start_stale_exhibition_caption_resubmission_v2", { p_work_id: work.id }); if (error) return failure(error); renderExhibitionApplicationV2(event, context); });
-    card.querySelector(".cancel-caption-reedit")?.addEventListener("click", async () => { const { error } = await supabase.rpc("cancel_exhibition_caption_reedit_v2", { p_case_id: card.dataset.caseId, p_reason: "" }); if (error) return failure(error); renderExhibitionApplicationV2(event, context); });
+    card.querySelector(".save-caption")?.addEventListener("click", async () => { const { error } = await supabase.rpc("save_exhibition_caption_draft_v2", payload(card, work)); if (error) return sectionFailure("#v2CaptionManager", error); await renderExhibitionApplicationV2(event, context); sectionMessage("#v2CaptionManager", "キャプション下書きを保存しました。"); });
+    card.querySelector(".submit-caption")?.addEventListener("click", async () => { const saved = await supabase.rpc("save_exhibition_caption_draft_v2", payload(card, work)); if (saved.error) return sectionFailure("#v2CaptionManager", saved.error); if (!confirm("この内容を正式提出しますか？提出内容はSnapshotとして保存されます。")) return; const { error } = await supabase.rpc("submit_exhibition_caption_v2", { p_work_id: work.id }); if (error) return sectionFailure("#v2CaptionManager", error); await renderExhibitionApplicationV2(event, context); sectionMessage("#v2CaptionManager", "キャプションを正式提出しました。"); });
+    card.querySelector(".request-caption-reedit")?.addEventListener("click", async () => { const reason = prompt("再編集理由（必須）"); if (!reason) return; const { error } = await supabase.rpc("request_exhibition_caption_reedit_v2", { p_work_id: work.id, p_reason: reason }); if (error) return sectionFailure("#v2CaptionManager", error); await renderExhibitionApplicationV2(event, context); sectionMessage("#v2CaptionManager", "キャプションの再編集を申請しました。"); });
+    card.querySelector(".start-stale-caption")?.addEventListener("click", async () => { if (!confirm("以前のCaption履歴を残したまま、現在の作品内容向けの再提出を開始しますか？")) return; const { error } = await supabase.rpc("start_stale_exhibition_caption_resubmission_v2", { p_work_id: work.id }); if (error) return sectionFailure("#v2CaptionManager", error); await renderExhibitionApplicationV2(event, context); sectionMessage("#v2CaptionManager", "現在の作品向けのCaption再提出を開始しました。"); });
+    card.querySelector(".cancel-caption-reedit")?.addEventListener("click", async () => { const { error } = await supabase.rpc("cancel_exhibition_caption_reedit_v2", { p_case_id: card.dataset.caseId, p_reason: "" }); if (error) return sectionFailure("#v2CaptionManager", error); await renderExhibitionApplicationV2(event, context); sectionMessage("#v2CaptionManager", "キャプションの再編集を取り消しました。"); });
   });
 }
 
@@ -3351,7 +3388,8 @@ async function renderAdminCaptionsV2(event, root, visibleWorks) {
   if (caseError) return failure(caseError);
   if (derivationError) return failure(derivationError);
   root.querySelectorAll(".admin-work-card").forEach((card) => {
-    const caption = (captions || []).find((item) => item.work_id === card.dataset.workId),
+    const work = visibleWorks.find((item) => item.work.id === card.dataset.workId)?.work,
+      caption = (captions || []).find((item) => item.work_id === card.dataset.workId),
       pending = (cases || []).find((item) => item.work_id === card.dataset.workId && item.case_type === "reedit" && item.state === "pending"),
       derived = (derivations || []).find((item) => item.work_id === card.dataset.workId);
     if (!caption) {
@@ -3359,8 +3397,9 @@ async function renderAdminCaptionsV2(event, root, visibleWorks) {
       return;
     }
     const snap = caption.exhibition_caption_submission_snapshots,
-      detail = snap || caption;
-    card.insertAdjacentHTML("beforeend", `<section class="caption-admin-panel"><h4>Caption｜${esc(caption.state)}</h4><dl class="caption-details"><dt>表示名</dt><dd>${esc(detail.display_name || "")}</dd><dt>英語作品名</dt><dd>${esc(detail.english_title_mode === "self" ? detail.member_english_title : derived?.english_title || "主催者作成待ち")}</dd><dt>媒体</dt><dd>${esc(detail.medium || "")}</dd><dt>Camera / Lens / Film</dt><dd>${esc([detail.camera,detail.lens,detail.film].filter(Boolean).join(" / "))}</dd><dt>Description</dt><dd>${esc(detail.description_choice === "unnecessary" ? "不要" : detail.description_ja || "")}</dd><dt>AI生成・大幅加工等</dt><dd>${esc(detail.ai_processing_declaration === "declared" ? `あり：${detail.ai_processing_details || "内容未入力"}` : detail.ai_processing_declaration === "none" ? "なし" : "未選択")}</dd><dt>Instagram QR</dt><dd>${esc(detail.instagram_qr_choice || "none")}</dd></dl><div class="actions">${caption.state === "submitted" ? '<button class="accept-caption">Captionを確認済みにする</button><button class="reject-caption danger">要修正にする</button>' : ""}${pending ? '<button class="permit-caption-reedit">再編集を許可</button><button class="reject-caption-reedit danger">再編集を却下</button>' : ""}${snap?.english_title_mode === "organizer" ? '<button class="derive-caption-title secondary">主催者英語作品名を登録</button>' : ""}</div></section>`);
+      detail = snap || caption,
+      currentWorkSnapshot = Boolean(snap?.work_submission_snapshot_id && snap.work_submission_snapshot_id === work?.current_accepted_snapshot_id);
+    card.insertAdjacentHTML("beforeend", `<section class="caption-admin-panel"><div class="caption-admin-heading"><div><h4>Caption｜${esc(work?.title || "作品名未設定")}</h4><p>対象作品：<strong>${esc(work?.title || `WORK ${work?.sort_order || ""}`)}</strong></p></div><span class="status ${snap && !currentWorkSnapshot ? "caption-stale-status" : ""}">${snap ? currentWorkSnapshot ? "現在AcceptedのWork Submissionに対応" : "旧Work Submissionに対応（stale）" : "Caption Working Data"}</span></div><dl class="caption-details"><dt>状態</dt><dd>${esc(caption.state)}</dd><dt>表示名</dt><dd>${esc(detail.display_name || "")}</dd><dt>英語作品名</dt><dd>${esc(detail.english_title_mode === "self" ? detail.member_english_title : derived?.english_title || "主催者作成待ち")}</dd><dt>媒体</dt><dd>${esc(detail.medium || "")}</dd><dt>Camera / Lens / Film</dt><dd>${esc([detail.camera,detail.lens,detail.film].filter(Boolean).join(" / "))}</dd><dt>Description</dt><dd>${esc(detail.description_choice === "unnecessary" ? "不要" : detail.description_ja || "")}</dd><dt>AI生成・大幅加工等</dt><dd>${esc(detail.ai_processing_declaration === "declared" ? `あり：${detail.ai_processing_details || "内容未入力"}` : detail.ai_processing_declaration === "none" ? "なし" : "未選択")}</dd><dt>Instagram QR</dt><dd>${esc(detail.instagram_qr_choice || "none")}</dd></dl><div class="actions caption-admin-actions">${caption.state === "submitted" ? '<button class="accept-caption">Captionを確認済みにする</button><button class="reject-caption danger">要修正にする</button>' : ""}${pending ? '<button class="permit-caption-reedit">再編集を許可</button><button class="reject-caption-reedit danger">再編集を却下</button>' : ""}${snap?.english_title_mode === "organizer" ? '<button class="derive-caption-title secondary">主催者英語作品名を登録</button>' : ""}</div></section>`);
     card.querySelector(".accept-caption")?.addEventListener("click", async () => { if (!confirm("表示中のCaption Snapshotを確認済みにしますか？")) return; const { error } = await supabase.rpc("admin_review_exhibition_caption_v2", { p_caption_snapshot_id: caption.current_submission_snapshot_id, p_result: "accepted", p_problem_fields: [], p_reason: "", p_individual_deadline: null }); if (error) return failure(error); renderExhibitionParticipants(event); });
     card.querySelector(".reject-caption")?.addEventListener("click", async () => { const fields = prompt("問題項目（カンマ区切り）", "other"), reason = prompt("要修正理由（必須）"); if (!fields || !reason) return; let deadline = null; if (Date.now() >= new Date(event.exhibition_caption_deadline).getTime()) { const value = prompt("個別期限をISO形式で入力してください。"); if (!value) return; deadline = new Date(value).toISOString(); } const { error } = await supabase.rpc("admin_review_exhibition_caption_v2", { p_caption_snapshot_id: caption.current_submission_snapshot_id, p_result: "rejected", p_problem_fields: fields.split(",").map((v) => v.trim()).filter(Boolean), p_reason: reason, p_individual_deadline: deadline }); if (error) return failure(error); renderExhibitionParticipants(event); });
     const decide = async (permit) => { const reason = prompt("判断理由（必須）"); if (!reason) return; let deadline = null; if (permit) { const value = prompt("再編集個別期限をISO形式で入力してください。"); if (!value) return; deadline = new Date(value).toISOString(); } const { error } = await supabase.rpc("admin_decide_exhibition_caption_reedit_v2", { p_case_id: pending.id, p_permit: permit, p_reason: reason, p_individual_deadline: deadline }); if (error) return failure(error); renderExhibitionParticipants(event); };
