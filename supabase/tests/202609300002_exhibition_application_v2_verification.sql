@@ -53,10 +53,15 @@ begin
     if sqlerrm='v1 Work 0件提出が拒否されませんでした。' then raise; end if;
   end;
 
+  -- Smartphone Phase 1以降、0は「個人枠0点」の有効値。負数は引き続き拒否する。
+  perform private.validate_exhibition_application_values(
+    (select event from public.events event where event.id=v_v2_event_id),
+    (select member from public.members member where member.id=v_member1_id),0,'real_name',''
+  );
   begin
-    perform public.submit_exhibition_application_v2(v_v2_event_id,0,'real_name','', '',v_agreement1_id,v_agreement1_hash);
-    raise exception 'planned_work_count=0が拒否されませんでした。';
-  exception when others then if sqlerrm='planned_work_count=0が拒否されませんでした。' then raise; end if; end;
+    perform public.submit_exhibition_application_v2(v_v2_event_id,-1,'real_name','', '',v_agreement1_id,v_agreement1_hash);
+    raise exception 'planned_work_count負数が拒否されませんでした。';
+  exception when others then if sqlerrm='planned_work_count負数が拒否されませんでした。' then raise; end if; end;
   begin
     perform public.submit_exhibition_application_v2(v_v2_event_id,4,'real_name','', '',v_agreement1_id,v_agreement1_hash);
     raise exception 'max_works超過が拒否されませんでした。';
