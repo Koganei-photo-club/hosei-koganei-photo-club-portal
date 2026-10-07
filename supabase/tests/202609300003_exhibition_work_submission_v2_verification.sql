@@ -90,14 +90,14 @@ begin
 
   -- Reviewはcurrent Snapshotだけを一度処理できる。
   perform set_config('request.jwt.claims',jsonb_build_object('email',v_admin_email,'role','authenticated')::text,true);
-  perform public.admin_review_exhibition_work_v2(v_snapshot1,'rejected',array['title'],'作品名を修正してください',null);
+  perform public.admin_review_exhibition_work_v2(v_snapshot1,'rejected',array['orientation'],'向きを修正してください',null);
   begin perform public.admin_review_exhibition_work_v2(v_snapshot1,'accepted','{}'::text[],'',null);
     raise exception '同じSnapshotの二重Reviewが拒否されませんでした。';
   exception when others then if sqlerrm='同じSnapshotの二重Reviewが拒否されませんでした。' then raise; end if; end;
 
   -- Reject後のSaveだけではsubmittedに戻らず、明示Resubmitでversion 2となる。
   perform set_config('request.jwt.claims',jsonb_build_object('email','__phase3_member__@example.invalid','role','authenticated')::text,true);
-  perform public.save_exhibition_work_draft_v2(v_event_id,v_work1,'作品1 修正版','portrait','A3','',297,420,true,v_object_path,repeat('a',64));
+  perform public.save_exhibition_work_draft_v2(v_event_id,v_work1,'作品1 修正版','landscape','A3','',420,297,true,v_object_path,repeat('a',64));
   if (select work.workflow_state from public.exhibition_works work where work.id=v_work1)<>'rejected' then raise exception 'Correction Saveでstateが変化しました。'; end if;
   perform public.submit_exhibition_work_batch_v2(v_event_id,array[v_work1]);
   select snapshot.id into v_snapshot2 from public.exhibition_work_submission_snapshots snapshot where snapshot.work_id=v_work1 and snapshot.version_no=2;
@@ -152,6 +152,12 @@ begin
   perform set_config('request.jwt.claims',jsonb_build_object('email',v_admin_email,'role','authenticated')::text,true);
   perform public.admin_withdraw_exhibition_work_v2(v_replacement_id,'Entry auto-cancel検証');
   perform public.admin_withdraw_exhibition_work_v2(v_work2,'Entry auto-cancel検証');
+  perform set_config('app.exhibition_workflow_rpc','on',true);
+  update public.events set exhibition_application_deadline=now()-interval '4 hours',
+    exhibition_work_submission_deadline=now()-interval '3 hours',exhibition_revision_deadline=now()-interval '2 hours',
+    exhibition_caption_deadline=now()-interval '1 hour' where id=v_event_id;
+  perform set_config('app.exhibition_workflow_rpc','off',true);
+  perform private.auto_cancel_v2_entry_if_no_viable(v_entry_id,'phase3-deadline-no-viable-work');
   if (select entry.application_state from public.exhibition_entries entry where entry.id=v_entry_id)<>'auto_cancelled' then raise exception 'viable Work 0でauto-cancelされませんでした。'; end if;
   perform set_config('request.jwt.claims',jsonb_build_object('email','__phase3_member__@example.invalid','role','authenticated')::text,true);
   begin perform public.submit_exhibition_application_v2(v_event_id,1,'real_name','','',v_agreement_id,v_agreement_hash);

@@ -144,7 +144,8 @@ begin
   end if;
   execute 'reset role';
 
-  -- Auto-cancel A-D. A=no work, B=regular only, C=smartphone only, D=both.
+  -- Before the Work deadline, a temporary zero-work state and every viable
+  -- Regular/Smartphone combination keep the Entry active.
   perform set_config('request.jwt.claims',jsonb_build_object('email','__smartphone_2__@example.invalid','role','authenticated')::text,true);
   result:=public.save_exhibition_work_draft_v2(event_id,null,'','','','',null,null,null,null,null); regular_work:=(result->>'id')::uuid;
   perform set_config('request.jwt.claims',jsonb_build_object('email','__smartphone_3__@example.invalid','role','authenticated')::text,true);
@@ -153,10 +154,9 @@ begin
   perform public.save_exhibition_work_draft_v2(event_id,null,'','','','',null,null,null,null,null);
   perform public.save_exhibition_smartphone_work_draft_v1(event_id,null,null,false,null,'',null,null);
   perform set_config('request.jwt.claims',jsonb_build_object('email',admin_email,'role','authenticated')::text,true);
-  if not private.auto_cancel_v2_entry_if_no_viable(entry1,'case-a') then
-    -- entry1 has viable accepted smartphone work, therefore it is Case C and must remain.
-    null;
-  else raise exception 'Case C: スマホ作品のみのEntryが取消されました。'; end if;
+  if private.auto_cancel_v2_entry_if_no_viable(entry1,'case-c') then
+    raise exception 'Case C: スマホ作品のみのEntryが取消されました。';
+  end if;
   if private.auto_cancel_v2_entry_if_no_viable(entry2,'case-b') then raise exception 'Case B: 個人作品のみのEntryが取消されました。'; end if;
   if private.auto_cancel_v2_entry_if_no_viable(entry3,'case-c') then raise exception 'Case C: スマホDraftのみのEntryが取消されました。'; end if;
   if private.auto_cancel_v2_entry_if_no_viable(entry4,'case-d') then raise exception 'Case D: 両方あるEntryが取消されました。'; end if;
@@ -164,7 +164,9 @@ begin
   perform set_config('app.exhibition_smartphone_work_rpc','on',true);
   update public.exhibition_smartphone_works set workflow_state='withdrawn',withdrawn_at=now() where entry_id=entry3;
   perform set_config('app.exhibition_smartphone_work_rpc','off',true);
-  if not private.auto_cancel_v2_entry_if_no_viable(entry3,'case-a') then raise exception 'Case A: 作品なしEntryが自動取消されません。'; end if;
+  if private.auto_cancel_v2_entry_if_no_viable(entry3,'case-a-before-deadline') then
+    raise exception 'Case A: 締切前の作品なしEntryが自動取消されました。';
+  end if;
 
   if not exists(select 1 from public.exhibition_workflow_audit_logs a where a.event_id=v.event_id and a.action='smartphone_accepted') then
     raise exception 'スマホ枠Auditが不足しています。'; end if;

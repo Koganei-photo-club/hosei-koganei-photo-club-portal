@@ -55,7 +55,7 @@ begin
   perform public.admin_decide_exhibition_work_reedit_v2((v_result->>'caseId')::uuid,true,'許可',now()+interval '1 day');
   if not exists(select 1 from public.admin_get_exhibition_action_center_v2(v_event_id) action where action.action_type='work_reedit_resubmission_pending' and action.category='member_action_pending') then raise exception 'Work member pendingが区別されません。'; end if;
   perform set_config('request.jwt.claims',jsonb_build_object('email','__phase5_member__@example.invalid','role','authenticated')::text,true);
-  perform public.save_exhibition_work_draft_v2(v_event_id,v_work_id,'W2','portrait','A3','',297,420,true,v_object_path,repeat('d',64));
+  perform public.save_exhibition_work_draft_v2(v_event_id,v_work_id,'W2','landscape','A3','',420,297,true,v_object_path,repeat('d',64));
   perform public.submit_exhibition_work_batch_v2(v_event_id,array[v_work_id]);
   select work.current_submission_snapshot_id into v_w2 from public.exhibition_works work where work.id=v_work_id;
   perform set_config('request.jwt.claims',jsonb_build_object('email',v_admin_email,'role','authenticated')::text,true);

@@ -66,7 +66,7 @@ begin
 
   -- Regular correction / expired correction / submitted / accepted / permitted re-edit / pending re-edit.
   insert into public.exhibition_work_reviews(work_id,submission_snapshot_id,reviewer_identifier,result,problem_fields,reason)
-    values(work_ids[1],snapshot_ids[1],admin_email,'rejected',array['title'],'作品名を確認してください') returning id into review_uuid;
+    values(work_ids[1],snapshot_ids[1],admin_email,'rejected',array['orientation'],'向きを確認してください') returning id into review_uuid;
   insert into public.exhibition_workflow_cases(work_id,event_id,member_id,case_type,source_submission_snapshot_id,source_review_id,state,decision_reason,individual_deadline,decided_at)
     values(work_ids[1],event_uuid,member_uuid,'correction',snapshot_ids[1],review_uuid,'open','作品名を確認してください',now()+interval '1 hour',now());
   perform set_config('app.exhibition_work_rpc','on',true); update public.exhibition_works set workflow_state='rejected' where id=work_ids[1]; perform set_config('app.exhibition_work_rpc','off',true);
@@ -166,7 +166,7 @@ begin
     raise exception '本人Action一覧が不正です: %',action_types;
   end if;
   if not exists(select 1 from public.get_my_exhibition_required_actions_v1() action
-    where action.action_type='regular_work_correction' and action.reason='作品名を確認してください' and action.problem_fields=array['title']) then
+    where action.action_type='regular_work_correction' and action.reason='向きを確認してください' and action.problem_fields=array['orientation']) then
     raise exception 'Work correctionがsource_review_idのReviewを参照していません。';
   end if;
   if not exists(select 1 from public.get_my_exhibition_required_actions_v1() action

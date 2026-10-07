@@ -74,7 +74,8 @@ begin
 
   perform set_config('request.jwt.claims',jsonb_build_object('email',admin_email,'role','authenticated')::text,true);
   if not private.auto_cancel_v2_entry_if_no_viable(entry1,'revival-basic')
-     or not private.auto_cancel_v2_entry_if_no_viable(entry3,'revival-expiry') then
+     or not private.auto_cancel_v2_entry_if_no_viable(entry3,'revival-expiry')
+     or not private.auto_cancel_v2_entry_if_no_viable(entry5,'revival-withdrawn') then
     raise exception '作品なしEntryの事前auto-cancelに失敗しました。';
   end if;
   if (select application_state from public.exhibition_entries where id=entry5)<>'auto_cancelled' then

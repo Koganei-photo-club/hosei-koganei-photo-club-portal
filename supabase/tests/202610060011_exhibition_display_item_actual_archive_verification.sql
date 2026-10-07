@@ -43,7 +43,7 @@ begin
  perform public.admin_review_exhibition_work_v2(regular_snapshot,'accepted','{}','',null);
  select item.id into regular_item from public.exhibition_display_items item where item.regular_work_id=regular_work;
  perform set_config('request.jwt.claims',jsonb_build_object('email','__display_actual__@example.invalid','role','authenticated')::text,true);
- perform public.save_exhibition_caption_draft_v2(regular_work,'公開作者','self','Regular EN','digital','','Camera','','','provided','通常作品説明','Regular description','none','',null,'none','');
+ perform public.save_exhibition_caption_draft_v2(regular_work,'公開作者','self','Regular EN','digital','','Camera','','','provided','通常作品説明','Regular description','none','',null,'none','','Caption正規タイトル');
  result:=public.submit_exhibition_caption_v2(regular_work);caption_snapshot:=(result->>'snapshotId')::uuid;
  perform set_config('request.jwt.claims',jsonb_build_object('email',admin_email,'role','authenticated')::text,true);
  perform public.admin_review_exhibition_caption_v2(caption_snapshot,'accepted','{}','',null);
@@ -65,10 +65,12 @@ begin
  result:=public.admin_finalize_exhibition_layout_v2(layout_id,'011');final_id:=(result->>'finalizationId')::uuid;
  select item.smartphone_group_version_id into group_version from public.exhibition_layout_finalization_items item where item.finalization_id=final_id and item.display_item_id=group_item;
  result:=public.admin_finalize_exhibition_export_v2(event_id,'011 Export');export_id:=(result->>'exportVersionId')::uuid;
+ if not exists(select 1 from public.exhibition_export_items item where item.export_version_id=export_id and item.work_id=regular_work and item.title_ja='Caption正規タイトル') then raise exception 'Caption SnapshotのタイトルがExportへ伝播しません。';end if;
  public_path:=event_id::text||'/'||member_id::text||'/'||regular_work::text||'/public.webp';
  insert into storage.objects(bucket_id,name,owner_id,metadata) values('exhibition-public',public_path,member_id,'{}');
  perform public.admin_set_exhibition_public_image_v2(regular_work,public_path);
  result:=public.admin_finalize_exhibition_publication_v2(export_id,'011 Publication');publication_id:=(result->>'publicationVersionId')::uuid;
+ if not exists(select 1 from public.exhibition_publication_items item where item.publication_version_id=publication_id and item.work_id=regular_work and item.title_ja='Caption正規タイトル') then raise exception 'Caption SnapshotのタイトルがPublicationへ伝播しません。';end if;
  perform public.admin_set_current_exhibition_publication_v2(publication_id,'011 current');
  survey_id:=public.submit_exhibition_survey('2099-display-actual',repeat('t',40),'ja','',jsonb_build_array(jsonb_build_object('display_item_id',group_item,'comment','group')));
  select to_jsonb(response) into survey_before from public.exhibition_survey_responses response where response.id=survey_id;
@@ -98,6 +100,7 @@ begin
  if (select to_jsonb(item) from public.exhibition_actual_items item where item.id=group_actual) is distinct from actual_before then raise exception 'accepted増加が確定Actualを変更しました。';end if;
 
  result:=public.admin_finalize_exhibition_archive_v2(actual_id,'011 Archive');archive_id:=(result->>'archiveVersionId')::uuid;
+ if not exists(select 1 from public.exhibition_archive_items item where item.archive_version_id=archive_id and item.work_id=regular_work and item.title_ja='Caption正規タイトル') then raise exception 'Caption SnapshotのタイトルがArchiveへ伝播しません。';end if;
  if (select count(*) from public.exhibition_archive_items item where item.archive_version_id=archive_id)<>2
   or (select count(*) from public.exhibition_archive_items item where item.archive_version_id=archive_id and item.display_item_type='smartphone_group')<>1 then raise exception 'Archiveが集合展示1件になりません。';end if;
  select to_jsonb(item) into archive_group from public.exhibition_archive_items item where item.archive_version_id=archive_id and item.display_item_id=group_item;
