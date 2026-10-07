@@ -1291,8 +1291,14 @@ async function renderExhibitionSmartphoneWorksV1(event, context, entry) {
 }
 
 async function renderExhibitionCaptionsV2(event, context, entry, works) {
+  const view = document.querySelector("#view"),
+    renderToken = crypto.randomUUID();
+  view.dataset.captionRenderToken = renderToken;
   const eligible = works.filter((work) => work.workflow_state === "accepted");
-  if (!eligible.length) return;
+  if (!eligible.length) {
+    view.querySelectorAll("#v2CaptionManager").forEach((node) => node.remove());
+    return;
+  }
   const workIds = eligible.map((work) => work.id),
     [{ data: captions, error }, { data: reviews, error: reviewError }, { data: cases, error: caseError }] = await Promise.all([
       supabase.from("exhibition_caption_working_data").select("*,accepted_snapshot:exhibition_caption_submission_snapshots!exhibition_caption_current_accepted_fk(work_submission_snapshot_id)").in("work_id", workIds),
@@ -1302,8 +1308,10 @@ async function renderExhibitionCaptionsV2(event, context, entry, works) {
   if (error) throw error;
   if (reviewError) throw reviewError;
   if (caseError) throw caseError;
-  document.querySelector("#view").insertAdjacentHTML("beforeend", '<section id="v2CaptionManager" class="panel exhibition-scroll-target"><div class="entry-heading"><div><span class="tag">CAPTION INFORMATION</span><h2>キャプション情報</h2></div></div><div class="section-message notice hidden" role="status" aria-live="polite"></div><p class="muted">作品確認とは別の工程です。正式提出後の変更は再提出・再確認になります。</p><div id="v2CaptionList" class="stack"></div></section>');
-  const list = document.querySelector("#v2CaptionList");
+  if (!view.isConnected || view.dataset.captionRenderToken !== renderToken) return;
+  view.querySelectorAll("#v2CaptionManager").forEach((node) => node.remove());
+  view.insertAdjacentHTML("beforeend", '<section id="v2CaptionManager" class="panel exhibition-scroll-target"><div class="entry-heading"><div><span class="tag">CAPTION INFORMATION</span><h2>キャプション情報</h2></div></div><div class="section-message notice hidden" role="status" aria-live="polite"></div><p class="muted">作品確認とは別の工程です。正式提出後の変更は再提出・再確認になります。</p><div id="v2CaptionList" class="stack"></div></section>');
+  const list = view.querySelector("#v2CaptionManager #v2CaptionList");
   eligible.forEach((work) => {
     const caption = (captions || []).find((item) => item.work_id === work.id) || {},
       openCase = (cases || []).find((item) => item.work_id === work.id && ["pending", "open", "permitted"].includes(item.state)),
@@ -1321,7 +1329,8 @@ async function renderExhibitionCaptionsV2(event, context, entry, works) {
     card.querySelector(".tag").textContent = `WORK ${work.sort_order}`;
     const imageBucket = work.preview_image_path ? "exhibition-previews" : "exhibition-originals",
       imagePath = work.preview_image_path || work.original_image_path || "";
-    form.insertAdjacentHTML("afterbegin", `<div class="full work-preview caption-work-preview" data-storage-bucket="${imageBucket}" data-storage-path="${esc(imagePath)}"><span class="muted">${imagePath ? "対象作品を読み込んでいます…" : "対象作品の画像はまだありません。"}</span></div><label class="full">作品タイトル（必須）<input name="title" value="${esc(caption.title || work.title || "")}" ${editable ? "" : "disabled"}></label>`);
+    form.querySelectorAll(".caption-work-preview, [data-caption-title-field]").forEach((node) => node.remove());
+    form.insertAdjacentHTML("afterbegin", `<div id="caption-work-preview-${work.id}" class="full work-preview caption-work-preview" data-work-id="${work.id}" data-storage-bucket="${imageBucket}" data-storage-path="${esc(imagePath)}"><span class="muted">${imagePath ? "対象作品を読み込んでいます…" : "対象作品の画像はまだありません。"}</span></div><label class="full" data-caption-title-field>作品タイトル（必須）<input name="title" value="${esc(caption.title || work.title || "")}" ${editable ? "" : "disabled"}></label>`);
   });
   await Promise.all([...list.querySelectorAll(".caption-work-preview[data-storage-path]")].filter((node) => node.dataset.storagePath).map((node) =>
     loadPrivateWorkImage(node, node.dataset.storageBucket, node.dataset.storagePath, "対象作品のプレビュー"),
@@ -2703,19 +2712,24 @@ async function downloadStorageFile(bucket, path, fileName) {
 
 async function loadPrivateWorkImage(target, bucket, path, alt) {
   if (!target || !path) return;
+  const requestId = crypto.randomUUID();
+  target.dataset.imageRequestId = requestId;
   const { data, error } = await supabase.storage
     .from(bucket)
     .createSignedUrl(path, 900);
+  if (!target.isConnected || target.dataset.imageRequestId !== requestId) return;
   if (error || !data?.signedUrl) {
-    target.innerHTML = '<span class="muted">画像を表示できませんでした。</span>';
+    target.replaceChildren(Object.assign(document.createElement("span"), { className: "muted", textContent: "画像を表示できませんでした。" }));
     return;
   }
   const image = document.createElement("img");
   image.src = data.signedUrl;
   image.alt = alt;
   image.addEventListener("error", () => {
-    target.innerHTML = '<span class="muted">この画像形式はブラウザで表示できません。</span>';
+    if (!target.isConnected || target.dataset.imageRequestId !== requestId) return;
+    target.replaceChildren(Object.assign(document.createElement("span"), { className: "muted", textContent: "この画像形式はブラウザで表示できません。" }));
   }, { once: true });
+  if (!target.isConnected || target.dataset.imageRequestId !== requestId) return;
   target.replaceChildren(image);
 }
 
@@ -3871,8 +3885,13 @@ async function renderExhibitionParticipants(event) {
 }
 
 async function renderAdminCaptionsV2(event, root, visibleWorks) {
+  const renderToken = crypto.randomUUID();
+  root.dataset.adminCaptionRenderToken = renderToken;
   const ids = visibleWorks.map(({ work }) => work.id);
-  if (!ids.length) return;
+  if (!ids.length) {
+    root.querySelectorAll(".caption-admin-panel, .caption-admin-empty").forEach((node) => node.remove());
+    return;
+  }
   const [{ data: captions, error }, { data: cases, error: caseError }, { data: derivations, error: derivationError }] = await Promise.all([
     supabase.from("exhibition_caption_working_data").select("*,exhibition_caption_submission_snapshots!exhibition_caption_current_submission_fk(*)").in("work_id", ids),
     supabase.from("exhibition_caption_workflow_cases").select("*").eq("event_id", event.id).order("requested_at", { ascending: false }),
@@ -3881,13 +3900,15 @@ async function renderAdminCaptionsV2(event, root, visibleWorks) {
   if (error) return failure(error);
   if (caseError) return failure(caseError);
   if (derivationError) return failure(derivationError);
+  if (!root.isConnected || root.dataset.adminCaptionRenderToken !== renderToken) return;
+  root.querySelectorAll(".caption-admin-panel, .caption-admin-empty").forEach((node) => node.remove());
   root.querySelectorAll(".admin-work-card").forEach((card) => {
     const work = visibleWorks.find((item) => item.work.id === card.dataset.workId)?.work,
       caption = (captions || []).find((item) => item.work_id === card.dataset.workId),
       pending = (cases || []).find((item) => item.work_id === card.dataset.workId && item.case_type === "reedit" && item.state === "pending"),
       derived = (derivations || []).find((item) => item.work_id === card.dataset.workId);
     if (!caption) {
-      card.insertAdjacentHTML("beforeend", '<div class="notice">キャプション未提出</div>');
+      card.insertAdjacentHTML("beforeend", '<div class="notice caption-admin-empty">キャプション未提出</div>');
       return;
     }
     const snap = caption.exhibition_caption_submission_snapshots,
