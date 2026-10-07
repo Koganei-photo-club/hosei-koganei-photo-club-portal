@@ -1319,12 +1319,13 @@ async function renderExhibitionCaptionsV2(event, context, entry, works) {
       form = card.querySelector(".form-grid"),
       editable = !caption.state || ["draft", "rejected", "reedit_editing"].includes(caption.state);
     card.querySelector(".tag").textContent = `WORK ${work.sort_order}`;
-    form.insertAdjacentHTML("afterbegin", `<div class="full work-preview caption-work-preview" data-preview-path="${esc(work.preview_image_path || "")}"><span class="muted">${work.preview_image_path ? "作品プレビューを読み込んでいます…" : "作品プレビューはまだありません。"}</span></div><label class="full">作品タイトル（必須）<input name="title" value="${esc(caption.title || work.title || "")}" ${editable ? "" : "disabled"}></label>`);
+    const imageBucket = work.preview_image_path ? "exhibition-previews" : "exhibition-originals",
+      imagePath = work.preview_image_path || work.original_image_path || "";
+    form.insertAdjacentHTML("afterbegin", `<div class="full work-preview caption-work-preview" data-storage-bucket="${imageBucket}" data-storage-path="${esc(imagePath)}"><span class="muted">${imagePath ? "対象作品を読み込んでいます…" : "対象作品の画像はまだありません。"}</span></div><label class="full">作品タイトル（必須）<input name="title" value="${esc(caption.title || work.title || "")}" ${editable ? "" : "disabled"}></label>`);
   });
-  await Promise.all([...list.querySelectorAll(".caption-work-preview[data-preview-path]")].filter((node) => node.dataset.previewPath).map(async (node) => {
-    const { data } = await supabase.storage.from("exhibition-previews").createSignedUrl(node.dataset.previewPath, 900);
-    if (data?.signedUrl) node.innerHTML = `<img src="${esc(data.signedUrl)}" alt="対象作品のプレビュー">`;
-  }));
+  await Promise.all([...list.querySelectorAll(".caption-work-preview[data-storage-path]")].filter((node) => node.dataset.storagePath).map((node) =>
+    loadPrivateWorkImage(node, node.dataset.storageBucket, node.dataset.storagePath, "対象作品のプレビュー"),
+  ));
   const payload = (card, work) => ({ p_work_id: work.id, p_title: card.querySelector('[name="title"]').value, p_display_name: card.querySelector('[name="display_name"]').value, p_english_title_mode: card.querySelector('[name="english_title_mode"]').value, p_member_english_title: card.querySelector('[name="member_english_title"]').value, p_medium: card.querySelector('[name="medium"]').value, p_medium_details: card.querySelector('[name="medium_details"]').value, p_camera: card.querySelector('[name="camera"]').value, p_lens: card.querySelector('[name="lens"]').value, p_film: card.querySelector('[name="film"]').value, p_description_choice: card.querySelector('[name="description_choice"]').value, p_description_ja: card.querySelector('[name="description_ja"]').value, p_description_en: card.querySelector('[name="description_en"]').value, p_instagram_qr_choice: card.querySelector('[name="instagram_qr_choice"]').value, p_instagram_qr_info: card.querySelector('[name="instagram_qr_info"]').value, p_instagram_qr_path: work.instagram_qr_path || null, p_ai_processing_declaration: card.querySelector(`[name="ai_processing_declaration_${work.id}"]:checked`)?.value || null, p_ai_processing_details: card.querySelector('[name="ai_processing_details"]').value });
   list.querySelectorAll(".v2-caption-card").forEach((card) => {
     const work = eligible.find((item) => item.id === card.dataset.workId);
@@ -2700,6 +2701,24 @@ async function downloadStorageFile(bucket, path, fileName) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+async function loadPrivateWorkImage(target, bucket, path, alt) {
+  if (!target || !path) return;
+  const { data, error } = await supabase.storage
+    .from(bucket)
+    .createSignedUrl(path, 900);
+  if (error || !data?.signedUrl) {
+    target.innerHTML = '<span class="muted">画像を表示できませんでした。</span>';
+    return;
+  }
+  const image = document.createElement("img");
+  image.src = data.signedUrl;
+  image.alt = alt;
+  image.addEventListener("error", () => {
+    target.innerHTML = '<span class="muted">この画像形式はブラウザで表示できません。</span>';
+  }, { once: true });
+  target.replaceChildren(image);
+}
+
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
 function layoutItemHeading(item) {
@@ -3693,16 +3712,21 @@ async function renderExhibitionParticipants(event) {
     await renderExhibitionParticipants(event);
     message(`${data.assignedCount}作品へ番号を付けました。`);
   };
-  root.querySelectorAll(".storage-image").forEach(async (target) => {
-    const { data, error: imageError } = await supabase.storage
-      .from("exhibition-previews")
-      .createSignedUrl(target.dataset.storagePath, 900);
-    if (imageError) {
-      target.textContent = "画像を表示できませんでした。";
-      return;
-    }
-    target.innerHTML = `<img src="${esc(data.signedUrl)}" alt="${esc(target.dataset.alt)}">`;
+  visibleWorks.forEach(({ work }) => {
+    if (work.preview_image_path || !work.original_image_path) return;
+    const imageHost = root.querySelector(`.admin-work-card[data-work-id="${work.id}"] .admin-work-image`),
+      placeholder = imageHost?.querySelector(".muted");
+    if (!placeholder) return;
+    placeholder.outerHTML = `<span class="storage-image" data-storage-bucket="exhibition-originals" data-storage-path="${esc(work.original_image_path)}" data-alt="対象作品のプレビュー">プレビュー読込中…</span>`;
   });
+  root.querySelectorAll(".storage-image").forEach((target) =>
+    loadPrivateWorkImage(
+      target,
+      target.dataset.storageBucket || "exhibition-previews",
+      target.dataset.storagePath,
+      target.dataset.alt || "作品画像",
+    ),
+  );
   root.querySelectorAll(".generate-public-image").forEach((button) => {
     button.onclick = async () => {
       const card = button.closest(".admin-work-card"),
