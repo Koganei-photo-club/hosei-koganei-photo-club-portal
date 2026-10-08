@@ -1060,8 +1060,42 @@ async function sha256Hex(file) {
     .join("");
 }
 
+function getLogicalActiveRegularWorks(works) {
+  const active = (works || []).filter((work) => work.workflow_state !== "withdrawn"),
+    replacedWorkIds = new Set(
+      active.map((work) => work.replacement_for_work_id).filter(Boolean),
+    );
+  return active
+    .filter((work) => !replacedWorkIds.has(work.id))
+    .sort((a, b) => Number(a.sort_order) - Number(b.sort_order) || a.id.localeCompare(b.id));
+}
+
+function createMemberRegularWorkNumberMap(works) {
+  const active = (works || []).filter((work) => work.workflow_state !== "withdrawn"),
+    allById = new Map((works || []).map((work) => [work.id, work])),
+    groups = new Map(),
+    numbers = new Map();
+  active.forEach((work) => {
+    let root = work,
+      guard = (works || []).length + 1;
+    while (root.replacement_for_work_id && allById.has(root.replacement_for_work_id) && guard > 0) {
+      root = allById.get(root.replacement_for_work_id);
+      guard -= 1;
+    }
+    if (!groups.has(root.id)) groups.set(root.id, { root, works: [] });
+    groups.get(root.id).works.push(work);
+  });
+  [...groups.values()]
+    .sort((a, b) => Number(a.root.sort_order) - Number(b.root.sort_order) || a.root.id.localeCompare(b.root.id))
+    .forEach((group, index) => group.works.forEach((work) => numbers.set(work.id, index + 1)));
+  return numbers;
+}
+
 async function renderExhibitionWorksV2(event, context, entry) {
-  const host = document.querySelector("#view");
+  const host = document.querySelector("#view"),
+    renderToken = crypto.randomUUID();
+  host.dataset.workRenderToken = renderToken;
+  host.querySelectorAll("#v2WorkManager").forEach((node) => node.remove());
   host.insertAdjacentHTML(
     "beforeend",
     '<section id="v2WorkManager" class="panel exhibition-scroll-target"><div class="entry-heading"><div><span class="tag">WORK SUBMISSION</span><h2>個人枠</h2></div><button id="newV2Work" class="secondary">個人枠作品を追加</button></div><div class="section-message notice hidden" role="status" aria-live="polite"></div><p class="muted">通常の作品として出展します。キャプション情報は別工程で登録します。作品確認済みは最終的な「出展確定」ではありません。</p><div id="v2WorkSummary" class="summary-strip"></div><div id="v2WorkList" class="stack"></div><div class="actions"><button id="submitV2WorkBatch">提出可能な個人枠作品をまとめて正式提出</button></div></section>',
@@ -1076,7 +1110,10 @@ async function renderExhibitionWorksV2(event, context, entry) {
   if (error) throw error;
   if (casesError) throw casesError;
   if (reviewsError) throw reviewsError;
+  if (!host.isConnected || host.dataset.workRenderToken !== renderToken) return;
   const activeWorks = (works || []).filter((work) => work.workflow_state !== "withdrawn"),
+    logicalActiveWorks = getLogicalActiveRegularWorks(works),
+    memberWorkNumbers = createMemberRegularWorkNumberMap(works),
     workIds = activeWorks.map((work) => work.id);
   let reviewRows = reviews || [];
   if (workIds.length) {
@@ -1111,21 +1148,34 @@ async function renderExhibitionWorksV2(event, context, entry) {
               : work.workflow_state === "reedit_editing"
                 ? "再編集中"
                 : "Draft";
-  root.querySelector("#v2WorkSummary").innerHTML = `<span>有効 ${activeWorks.length}点</span><span>提出可能 ${activeWorks.filter(ready).length}点</span><span>未完成 ${activeWorks.filter((work) => editableStates.has(work.workflow_state) && !ready(work)).length}点</span><span>確認待ち ${activeWorks.filter((work) => work.workflow_state === "submitted").length}点</span><span>作品確認済み ${activeWorks.filter((work) => work.workflow_state === "accepted").length}点</span>`;
+  root.querySelector("#v2WorkSummary").innerHTML = `<span><strong>通常作品：登録中 ${logicalActiveWorks.length} / ${event.max_works}点</strong></span><span>提出可能 ${activeWorks.filter(ready).length}点</span><span>未完成 ${activeWorks.filter((work) => editableStates.has(work.workflow_state) && !ready(work)).length}点</span><span>確認待ち ${activeWorks.filter((work) => work.workflow_state === "submitted").length}点</span><span>作品確認済み ${activeWorks.filter((work) => work.workflow_state === "accepted").length}点</span>`;
   const list = root.querySelector("#v2WorkList");
   if (!activeWorks.length) list.innerHTML = '<p class="muted">作品Draftはまだありません。</p>';
   activeWorks.forEach((work) => {
     const editable = editableStates.has(work.workflow_state),
+      memberNumber = memberWorkNumbers.get(work.id),
+      activeReplacement = activeWorks.find((item) => item.replacement_for_work_id === work.id),
+      replacementLabel = work.replacement_for_work_id
+        ? "（差し替え先）"
+        : activeReplacement
+          ? "（元の作品・差し替え中）"
+          : "",
       latestReview = reviewRows.find((review) => review.work_id === work.id),
       openCase = (cases || []).find(
         (item) => item.work_id === work.id && ["pending", "open", "permitted"].includes(item.state),
       );
     list.insertAdjacentHTML(
       "beforeend",
-      `<article class="work-editor v2-work-card" data-id="${work.id}"><div class="work-editor-head"><div><span class="tag">WORK ${work.sort_order}</span><h3>${stateLabel(work)}</h3></div><span class="status">${ready(work) ? "提出可能" : editable ? "未完成" : "ロック中"}</span></div>${latestReview?.result === "rejected" ? `<div class="notice error"><strong>要修正：</strong>${esc((latestReview.problem_fields || []).join("・"))}<br>${esc(latestReview.reason)}</div>` : ""}${openCase?.individual_deadline ? `<p class="notice">個別期限：${fmt(openCase.individual_deadline)}</p>` : ""}<div class="form-grid"><label>原画像<input name="original" type="file" accept="image/jpeg,image/png,image/tiff,image/heic,image/heif,.jpg,.jpeg,.png,.tif,.tiff,.heic,.heif" ${editable ? "" : "disabled"}><small>${work.original_image_path ? `登録済み：${esc(work.original_image_path.split("/").pop())}` : "未登録"}</small></label><label>向き<select name="orientation" ${editable ? "" : "disabled"}><option value="">選択</option><option value="portrait" ${work.orientation === "portrait" ? "selected" : ""}>縦</option><option value="landscape" ${work.orientation === "landscape" ? "selected" : ""}>横</option></select></label><label>プリントサイズ<select name="print_size" ${editable ? "" : "disabled"}><option value="">選択</option>${["A4", "A3", "A2", "composite", "other"].map((value) => `<option value="${value}" ${work.print_size === value ? "selected" : ""}>${value === "composite" ? "組み写真" : value === "other" ? "その他" : value}</option>`).join("")}</select></label><label>サイズ詳細<input name="print_size_detail" value="${esc(work.print_size_detail || "")}" ${editable ? "" : "disabled"}></label><label>壁面占有幅（mm）<input name="occupied_width_mm" type="number" min="0.01" step="0.01" value="${work.occupied_width_mm || ""}" ${editable ? "" : "disabled"}></label><label>壁面占有高さ（mm）<input name="occupied_height_mm" type="number" min="0.01" step="0.01" value="${work.occupied_height_mm || ""}" ${editable ? "" : "disabled"}></label><fieldset class="full"><legend>写真展サイト掲載</legend><label><input type="radio" name="publication_consent_${work.id}" value="true" ${work.publication_consent === true ? "checked" : ""} ${editable ? "" : "disabled"}>同意する</label><label><input type="radio" name="publication_consent_${work.id}" value="false" ${work.publication_consent === false ? "checked" : ""} ${editable ? "" : "disabled"}>同意しない</label></fieldset></div><div class="actions">${editable ? '<button class="save-v2-work">Draft保存</button>' : ""}${work.workflow_state === "accepted" ? '<button class="request-reedit secondary">再編集を申請</button>' : ""}${work.workflow_state === "reedit_pending" && openCase ? '<button class="cancel-reedit secondary">再編集申請を取り消す</button>' : ""}${work.workflow_state === "reedit_editing" && openCase ? '<button class="restore-accepted secondary">変更を取りやめる</button>' : ""}${new Date() < new Date(event.exhibition_work_submission_deadline) && !work.replacement_for_work_id ? '<button class="start-replacement secondary">別作品へ差し替える</button>' : ""}${work.replacement_for_work_id && work.workflow_state === "draft" ? '<button class="cancel-replacement secondary">差し替えを取り消す</button>' : ""}<button class="withdraw-v2-work danger">作品を取り下げる</button></div></article>`,
+      `<article class="work-editor v2-work-card" data-id="${work.id}"><div class="work-editor-head"><div><span class="tag">作品${memberNumber}${replacementLabel}</span><h3>${stateLabel(work)}</h3></div><span class="status">${ready(work) ? "提出可能" : editable ? "未完成" : "ロック中"}</span></div>${latestReview?.result === "rejected" ? `<div class="notice error"><strong>要修正：</strong>${esc((latestReview.problem_fields || []).join("・"))}<br>${esc(latestReview.reason)}</div>` : ""}${openCase?.individual_deadline ? `<p class="notice">個別期限：${fmt(openCase.individual_deadline)}</p>` : ""}<div id="work-preview-${work.id}" class="work-preview member-work-preview" data-work-id="${work.id}" data-storage-bucket="${work.preview_image_path ? "exhibition-previews" : "exhibition-originals"}" data-storage-path="${esc(work.preview_image_path || work.original_image_path || "")}"><span class="muted">${work.preview_image_path || work.original_image_path ? "現在登録されている画像を読み込んでいます…" : "画像はまだ登録されていません。"}</span></div><div class="form-grid"><label>原画像<input name="original" type="file" accept="image/jpeg,image/png,image/tiff,image/heic,image/heif,.jpg,.jpeg,.png,.tif,.tiff,.heic,.heif" ${editable ? "" : "disabled"}><small>${work.original_image_path ? `登録済み：${esc(work.original_image_path.split("/").pop())}` : "未登録"}</small></label><label>向き<select name="orientation" ${editable ? "" : "disabled"}><option value="">選択</option><option value="portrait" ${work.orientation === "portrait" ? "selected" : ""}>縦</option><option value="landscape" ${work.orientation === "landscape" ? "selected" : ""}>横</option></select></label><label>プリントサイズ<select name="print_size" ${editable ? "" : "disabled"}><option value="">選択</option>${["A4", "A3", "A2", "composite", "other"].map((value) => `<option value="${value}" ${work.print_size === value ? "selected" : ""}>${value === "composite" ? "組み写真" : value === "other" ? "その他" : value}</option>`).join("")}</select></label><label>サイズ詳細<input name="print_size_detail" value="${esc(work.print_size_detail || "")}" ${editable ? "" : "disabled"}></label><label>壁面占有幅（mm）<input name="occupied_width_mm" type="number" min="0.01" step="0.01" value="${work.occupied_width_mm || ""}" ${editable ? "" : "disabled"}></label><label>壁面占有高さ（mm）<input name="occupied_height_mm" type="number" min="0.01" step="0.01" value="${work.occupied_height_mm || ""}" ${editable ? "" : "disabled"}></label><fieldset class="full"><legend>写真展サイト掲載</legend><label><input type="radio" name="publication_consent_${work.id}" value="true" ${work.publication_consent === true ? "checked" : ""} ${editable ? "" : "disabled"}>同意する</label><label><input type="radio" name="publication_consent_${work.id}" value="false" ${work.publication_consent === false ? "checked" : ""} ${editable ? "" : "disabled"}>同意しない</label></fieldset></div><div class="actions">${editable ? '<button class="save-v2-work">Draft保存</button>' : ""}${work.workflow_state === "accepted" ? '<button class="request-reedit secondary">再編集を申請</button>' : ""}${work.workflow_state === "reedit_pending" && openCase ? '<button class="cancel-reedit secondary">再編集申請を取り消す</button>' : ""}${work.workflow_state === "reedit_editing" && openCase ? '<button class="restore-accepted secondary">変更を取りやめる</button>' : ""}${new Date() < new Date(event.exhibition_work_submission_deadline) && !work.replacement_for_work_id ? '<button class="start-replacement secondary">別作品へ差し替える</button>' : ""}${work.replacement_for_work_id && work.workflow_state === "draft" ? '<button class="cancel-replacement secondary">差し替えを取り消す</button>' : ""}<button class="withdraw-v2-work danger">作品を取り下げる</button></div></article>`,
     );
   });
-  root.querySelector("#newV2Work").disabled = activeWorks.filter((work) => !work.replacement_for_work_id).length >= event.max_works;
+  await Promise.all(
+    [...root.querySelectorAll(".member-work-preview[data-storage-path]")]
+      .filter((node) => node.dataset.storagePath)
+      .map((node) => loadPrivateWorkImage(node, node.dataset.storageBucket, node.dataset.storagePath, "現在登録されている作品画像")),
+  );
+  if (!root.isConnected || host.dataset.workRenderToken !== renderToken) return;
+  root.querySelector("#newV2Work").disabled = logicalActiveWorks.length >= event.max_works;
   root.querySelector("#newV2Work").onclick = async () => {
     const { error } = await supabase.rpc("save_exhibition_work_draft_v2", {
       p_event_id: event.id, p_work_id: null, p_title: "", p_orientation: "", p_print_size: "",
@@ -1206,7 +1256,7 @@ async function renderExhibitionWorksV2(event, context, entry) {
     await renderExhibitionApplicationV2(event, context);
     sectionMessage("#v2WorkManager", `${data.submittedWorkIds?.length || 0}作品を正式提出しました。`);
   };
-  await renderExhibitionCaptionsV2(event, context, entry, activeWorks);
+  await renderExhibitionCaptionsV2(event, context, entry, activeWorks, memberWorkNumbers);
 }
 
 async function renderExhibitionSmartphoneWorksV1(event, context, entry) {
@@ -1290,7 +1340,7 @@ async function renderExhibitionSmartphoneWorksV1(event, context, entry) {
   });
 }
 
-async function renderExhibitionCaptionsV2(event, context, entry, works) {
+async function renderExhibitionCaptionsV2(event, context, entry, works, memberWorkNumbers) {
   const view = document.querySelector("#view"),
     renderToken = crypto.randomUUID();
   view.dataset.captionRenderToken = renderToken;
@@ -1326,7 +1376,7 @@ async function renderExhibitionCaptionsV2(event, context, entry, works) {
       caption = (captions || []).find((item) => item.work_id === work.id) || {},
       form = card.querySelector(".form-grid"),
       editable = !caption.state || ["draft", "rejected", "reedit_editing"].includes(caption.state);
-    card.querySelector(".tag").textContent = `WORK ${work.sort_order}`;
+    card.querySelector(".tag").textContent = `作品${memberWorkNumbers.get(work.id)}`;
     const imageBucket = work.preview_image_path ? "exhibition-previews" : "exhibition-originals",
       imagePath = work.preview_image_path || work.original_image_path || "";
     form.querySelectorAll(".caption-work-preview, [data-caption-title-field]").forEach((node) => node.remove());
