@@ -2210,7 +2210,11 @@ async function renderAdmin(context, maintenance = null) {
         async () => {
           if (Number(event.exhibition_workflow_version) === 2) {
             await renderExhibitionParticipants(event);
-            document.querySelector("#showV2Export")?.click();
+            await renderAdminExhibitionExportV2(
+              event,
+              document.querySelector("#participantAdmin"),
+              false,
+            );
             return;
           }
           const ending = event.site_status === "published",
@@ -4080,16 +4084,24 @@ async function renderAdminCaptionsV2(event, root, visibleWorks) {
   });
 }
 
-async function renderAdminExhibitionExportV2(event, root) {
+async function renderAdminExhibitionExportV2(
+  event,
+  root,
+  showExportReadiness = true,
+) {
   let panel = root.querySelector("#v2ExportAdmin");
   if (!panel) {
     root.insertAdjacentHTML("beforeend", '<section id="v2ExportAdmin" class="panel"></section>');
     panel = root.querySelector("#v2ExportAdmin");
   }
-  panel.innerHTML = '<p class="muted">Export readinessを読み込んでいます…</p>';
+  panel.innerHTML = `<p class="muted">${showExportReadiness ? "Master Exportの準備状況" : "Publication管理情報"}を読み込んでいます…</p>`;
   panel.scrollIntoView({ behavior: "smooth" });
   const [{ data: readiness, error }, { data: versions, error: historyError }, { data: publications, error: publicationError }, { data: publicationItems, error: publicationItemsError }, { data: publicationState, error: stateError }] = await Promise.all([
-    supabase.rpc("admin_get_exhibition_export_readiness_v2", { p_event_id: event.id }),
+    showExportReadiness
+      ? supabase.rpc("admin_get_exhibition_export_readiness_v2", {
+          p_event_id: event.id,
+        })
+      : Promise.resolve({ data: [], error: null }),
     supabase.from("exhibition_export_versions").select("*").eq("event_id", event.id).order("version_no", { ascending: false }),
     supabase.from("exhibition_publication_versions").select("*").eq("event_id", event.id).order("version_no", { ascending: false }),
     supabase.from("exhibition_publication_items").select("publication_version_id,display_no,title_ja,publication_consent,image_state").eq("event_id", event.id).order("public_order"),
@@ -4100,15 +4112,23 @@ async function renderAdminExhibitionExportV2(event, root) {
   if (publicationError) return failure(publicationError);
   if (publicationItemsError) return failure(publicationItemsError);
   if (stateError) return failure(stateError);
-  const rows = readiness || [], blocked = rows.filter((item) => !item.ready), latest = rows[0];
-  panel.innerHTML = `<div class="entry-heading"><div><span class="tag">WORKFLOW V2 MASTER EXPORT</span><h2>キャプション・展示運営用Export</h2><p class="muted">Previewは履歴を作成しません。FINAL Exportだけが現在のLayout・Work・Captionを不変履歴として固定します。</p></div></div><div class="summary-strip"><span>対象 ${rows.length}点</span><span>Ready ${rows.length - blocked.length}点</span><span>Block ${blocked.length}点</span><span>Layout Finalization ${latest ? `v${latest.layout_finalization_version}` : "なし"}</span></div>${blocked.length ? `<div class="notice error"><strong>FINAL Exportを作成できません。</strong>${blocked.map((item) => `<p>Work ${esc(item.work_id)}：${esc((item.reasons || []).join("／"))}</p>`).join("")}</div>` : '<div class="notice">すべての対象WorkがExport可能です。</div>'}<div class="actions"><button id="finalizeV2Export" ${!rows.length || blocked.length ? "disabled" : ""}>FINAL Exportを作成</button></div><section><h3>不変Export履歴</h3><div class="stack">${(versions || []).length ? versions.map((version) => `<article class="admin-row"><div><strong>Export v${version.version_no}</strong><p class="muted">${fmt(version.created_at)}／Layout v${version.layout_finalization_version}／${esc(version.created_by)}</p><p>${esc(version.note || "")}</p></div><div class="actions"><button class="secondary inspect-v2-export" data-export-id="${version.id}">内容確認</button><button class="secondary download-v2-export" data-export-id="${version.id}" data-version="${version.version_no}">Master CSV</button><button class="secondary create-v2-publication" data-export-id="${version.id}" data-version="${version.version_no}">Publicationを作成</button></div></article>`).join("") : '<p class="muted">FINAL Exportはまだありません。</p>'}</div></section><section><h3>Public Publication履歴</h3><p class="muted">案内ページは作品完成前でも公開できます。作品一覧とアンケートはCurrentに指定した不変Publicationだけを参照します。</p><div class="stack">${(publications || []).length ? publications.map((publication) => { const items = (publicationItems || []).filter((item) => item.publication_version_id === publication.id), noImages = items.filter((item) => item.image_state === "no_image"); return `<article class="admin-row"><div><strong>Publication v${publication.version_no}${publication.id === publicationState.current_publication_version_id ? "（CURRENT）" : ""}</strong><p class="muted">Export ${esc(publication.source_export_version_id)}／${fmt(publication.created_at)}／全${items.length}点・NO IMAGE ${noImages.length}点</p>${noImages.length ? `<p>NO IMAGE：${noImages.map((item) => `No.${item.display_no} ${esc(item.title_ja)}`).join("／")}</p>` : ""}</div><button class="secondary set-current-publication" data-publication-id="${publication.id}" ${publication.id === publicationState.current_publication_version_id ? "disabled" : ""}>Currentに設定</button></article>`; }).join("") : '<p class="muted">Publicationはまだありません。</p>'}</div><div class="notice">案内ページ：${esc(publicationState.site_status)}／作品Publication：${publicationState.current_publication_version_id ? "Current設定済み" : "準備中"}／Survey：${publicationState.survey_enabled ? `有効（${fmt(publicationState.survey_opens_at)}〜${fmt(publicationState.survey_closes_at)}）` : "無効"}</div>${publicationState.site_status === "published" ? '<div class="actions"><button id="endV2PublicSite" class="danger">一般公開を終了</button></div>' : '<div class="actions"><button id="publishV2Guide">案内ページを公開</button></div>'}</section><div id="v2ExportDetail"></div>`;
+  const rows = readiness || [],
+    blocked = rows.filter((item) => !item.ready),
+    latest = rows[0],
+    exportReadinessHtml = showExportReadiness
+      ? `<div class="summary-strip"><span>対象 ${rows.length}点</span><span>Ready ${rows.length - blocked.length}点</span><span>Block ${blocked.length}点</span><span>Layout Finalization ${latest ? `v${latest.layout_finalization_version}` : "なし"}</span></div>${blocked.length ? `<div class="notice error"><strong>FINAL Exportを作成できません。</strong>${blocked.map((item) => `<p>Work ${esc(item.work_id)}：${esc((item.reasons || []).join("／"))}</p>`).join("")}</div>` : '<div class="notice">すべての対象WorkがExport可能です。</div>'}<div class="actions"><button id="finalizeV2Export" ${!rows.length || blocked.length ? "disabled" : ""}>FINAL Exportを作成</button></div>`
+      : '<div class="notice"><strong>Publication管理を表示しています。</strong><p>この画面を開いただけではFINAL ExportやPublicationは作成されません。作品・Caption・Layoutの準備状況を確認するときだけ、下のボタンからMaster Exportの確認画面を開いてください。</p><div class="actions"><button id="showExportReadiness" class="secondary">Master Exportの準備状況を確認</button></div></div>';
+  panel.innerHTML = `<div class="entry-heading"><div><span class="tag">${showExportReadiness ? "WORKFLOW V2 MASTER EXPORT" : "WORKFLOW V2 PUBLICATION"}</span><h2>${showExportReadiness ? "キャプション・展示運営用Export" : "Publication管理"}</h2><p class="muted">${showExportReadiness ? "Previewは履歴を作成しません。FINAL Exportだけが現在のLayout・Work・Captionを不変履歴として固定します。" : "案内ページ、既存の不変Export、作品PublicationとSurveyの公開状態を管理します。"}</p></div></div>${exportReadinessHtml}<section><h3>不変Export履歴</h3><div class="stack">${(versions || []).length ? versions.map((version) => `<article class="admin-row"><div><strong>Export v${version.version_no}</strong><p class="muted">${fmt(version.created_at)}／Layout v${version.layout_finalization_version}／${esc(version.created_by)}</p><p>${esc(version.note || "")}</p></div><div class="actions"><button class="secondary inspect-v2-export" data-export-id="${version.id}">内容確認</button><button class="secondary download-v2-export" data-export-id="${version.id}" data-version="${version.version_no}">Master CSV</button><button class="secondary create-v2-publication" data-export-id="${version.id}" data-version="${version.version_no}">Publicationを作成</button></div></article>`).join("") : '<p class="muted">FINAL Exportはまだありません。</p>'}</div></section><section><h3>Public Publication履歴</h3><p class="muted">案内ページは作品完成前でも公開できます。作品一覧とアンケートはCurrentに指定した不変Publicationだけを参照します。</p><div class="stack">${(publications || []).length ? publications.map((publication) => { const items = (publicationItems || []).filter((item) => item.publication_version_id === publication.id), noImages = items.filter((item) => item.image_state === "no_image"); return `<article class="admin-row"><div><strong>Publication v${publication.version_no}${publication.id === publicationState.current_publication_version_id ? "（CURRENT）" : ""}</strong><p class="muted">Export ${esc(publication.source_export_version_id)}／${fmt(publication.created_at)}／全${items.length}点・NO IMAGE ${noImages.length}点</p>${noImages.length ? `<p>NO IMAGE：${noImages.map((item) => `No.${item.display_no} ${esc(item.title_ja)}`).join("／")}</p>` : ""}</div><button class="secondary set-current-publication" data-publication-id="${publication.id}" ${publication.id === publicationState.current_publication_version_id ? "disabled" : ""}>Currentに設定</button></article>`; }).join("") : '<p class="muted">Publicationはまだありません。</p>'}</div><div class="notice">案内ページ：${esc(publicationState.site_status)}／作品Publication：${publicationState.current_publication_version_id ? "Current設定済み" : "準備中"}／Survey：${publicationState.survey_enabled ? `有効（${fmt(publicationState.survey_opens_at)}〜${fmt(publicationState.survey_closes_at)}）` : "無効"}</div>${publicationState.site_status === "published" ? '<div class="actions"><button id="endV2PublicSite" class="danger">一般公開を終了</button></div>' : '<div class="actions"><button id="publishV2Guide">案内ページを公開</button></div>'}</section><div id="v2ExportDetail"></div>`;
+  panel.querySelector("#showExportReadiness")?.addEventListener("click", () =>
+    renderAdminExhibitionExportV2(event, root, true),
+  );
   panel.querySelector("#finalizeV2Export")?.addEventListener("click", async () => {
     if (!confirm("現在のFINAL Layout・Work Snapshot・Caption Snapshotを新しい不変Export Versionとして固定しますか？")) return;
     const note = prompt("Exportメモ（任意）", "");
     if (note === null) return;
     const { data, error } = await supabase.rpc("admin_finalize_exhibition_export_v2", { p_event_id: event.id, p_note: note.trim() });
     if (error) return failure(error);
-    await renderAdminExhibitionExportV2(event, root);
+    await renderAdminExhibitionExportV2(event, root, showExportReadiness);
     message(`FINAL Export v${data.versionNo}を作成しました（${data.itemCount}点）。`);
   });
   const loadVersion = async (id) => {
@@ -4142,26 +4162,26 @@ async function renderAdminExhibitionExportV2(event, root) {
     const note = prompt("Publicationメモ（任意）", ""); if (note === null) return;
     const { data, error: createError } = await supabase.rpc("admin_finalize_exhibition_publication_v2", { p_export_version_id: button.dataset.exportId, p_note: note.trim() });
     if (createError) return failure(createError);
-    await renderAdminExhibitionExportV2(event, root); message(`Publication v${data.versionNo}を作成しました。`);
+    await renderAdminExhibitionExportV2(event, root, showExportReadiness); message(`Publication v${data.versionNo}を作成しました。`);
   });
   panel.querySelectorAll(".set-current-publication").forEach((button) => button.onclick = async () => {
     if (!confirm("この不変Publication Versionを現在の一般公開・Survey表示に切り替えますか？")) return;
     const reason = prompt("切替理由（任意）", ""); if (reason === null) return;
     const { error } = await supabase.rpc("admin_set_current_exhibition_publication_v2", { p_publication_version_id: button.dataset.publicationId, p_reason: reason.trim() });
     if (error) return failure(error);
-    await renderAdminExhibitionExportV2(event, root); message("Current Publicationを切り替えました。");
+    await renderAdminExhibitionExportV2(event, root, showExportReadiness); message("Current Publicationを切り替えました。");
   });
   panel.querySelector("#endV2PublicSite")?.addEventListener("click", async () => {
     if (!confirm("一般公開とSurvey受付を終了しますか？不変Publicationと回答履歴は保持されます。")) return;
     const { error } = await supabase.rpc("admin_end_exhibition_site", { p_event_id: event.id });
     if (error) return failure(error);
-    await renderAdminExhibitionExportV2(event, root); message("一般公開を終了しました。");
+    await renderAdminExhibitionExportV2(event, root, showExportReadiness); message("一般公開を終了しました。");
   });
   panel.querySelector("#publishV2Guide")?.addEventListener("click", async () => {
     if (!confirm("一般向け写真展サイトの案内ページを公開しますか？\n\n・一般ユーザーが写真展案内を閲覧できるようになります\n・作品Publicationがない場合、作品は準備中と表示されます\n・出展募集は公開されません\n・シフトは公開されません")) return;
     const { error } = await supabase.rpc("admin_publish_exhibition_guide_v2", { p_event_id: event.id });
     if (error) return failure(error);
-    await renderAdminExhibitionExportV2(event, root); message("一般向け写真展案内ページを公開しました。");
+    await renderAdminExhibitionExportV2(event, root, showExportReadiness); message("一般向け写真展案内ページを公開しました。");
   });
 }
 
