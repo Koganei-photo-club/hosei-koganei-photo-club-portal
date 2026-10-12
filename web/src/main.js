@@ -1172,7 +1172,21 @@ async function renderExhibitionWorksV2(event, context, entry) {
   await Promise.all(
     [...root.querySelectorAll(".member-work-preview[data-storage-path]")]
       .filter((node) => node.dataset.storagePath)
-      .map((node) => loadPrivateWorkImage(node, node.dataset.storageBucket, node.dataset.storagePath, "現在登録されている作品画像")),
+      .map((node) =>
+        loadPrivateWorkImage(
+          node,
+          node.dataset.storageBucket,
+          node.dataset.storagePath,
+          "現在登録されている作品画像",
+          node.dataset.storageBucket === "exhibition-previews"
+            ? "exhibition-originals"
+            : null,
+          node.dataset.storageBucket === "exhibition-previews"
+            ? activeWorks.find((work) => work.id === node.dataset.workId)
+                ?.original_image_path
+            : null,
+        ),
+      ),
   );
   if (!root.isConnected || host.dataset.workRenderToken !== renderToken) return;
   root.querySelector("#newV2Work").disabled = logicalActiveWorks.length >= event.max_works;
@@ -1383,7 +1397,19 @@ async function renderExhibitionCaptionsV2(event, context, entry, works, memberWo
     form.insertAdjacentHTML("afterbegin", `<div id="caption-work-preview-${work.id}" class="full work-preview caption-work-preview" data-work-id="${work.id}" data-storage-bucket="${imageBucket}" data-storage-path="${esc(imagePath)}"><span class="muted">${imagePath ? "対象作品を読み込んでいます…" : "対象作品の画像はまだありません。"}</span></div><label class="full" data-caption-title-field>作品タイトル（必須）<input name="title" value="${esc(caption.title || work.title || "")}" ${editable ? "" : "disabled"}></label>`);
   });
   await Promise.all([...list.querySelectorAll(".caption-work-preview[data-storage-path]")].filter((node) => node.dataset.storagePath).map((node) =>
-    loadPrivateWorkImage(node, node.dataset.storageBucket, node.dataset.storagePath, "対象作品のプレビュー"),
+    loadPrivateWorkImage(
+      node,
+      node.dataset.storageBucket,
+      node.dataset.storagePath,
+      "対象作品のプレビュー",
+      node.dataset.storageBucket === "exhibition-previews"
+        ? "exhibition-originals"
+        : null,
+      node.dataset.storageBucket === "exhibition-previews"
+        ? eligible.find((work) => work.id === node.dataset.workId)
+            ?.original_image_path
+        : null,
+    ),
   ));
   const payload = (card, work) => ({ p_work_id: work.id, p_title: card.querySelector('[name="title"]').value, p_display_name: card.querySelector('[name="display_name"]').value, p_english_title_mode: card.querySelector('[name="english_title_mode"]').value, p_member_english_title: card.querySelector('[name="member_english_title"]').value, p_medium: card.querySelector('[name="medium"]').value, p_medium_details: card.querySelector('[name="medium_details"]').value, p_camera: card.querySelector('[name="camera"]').value, p_lens: card.querySelector('[name="lens"]').value, p_film: card.querySelector('[name="film"]').value, p_description_choice: card.querySelector('[name="description_choice"]').value, p_description_ja: card.querySelector('[name="description_ja"]').value, p_description_en: card.querySelector('[name="description_en"]').value, p_instagram_qr_choice: card.querySelector('[name="instagram_qr_choice"]').value, p_instagram_qr_info: card.querySelector('[name="instagram_qr_info"]').value, p_instagram_qr_path: work.instagram_qr_path || null, p_ai_processing_declaration: card.querySelector(`[name="ai_processing_declaration_${work.id}"]:checked`)?.value || null, p_ai_processing_details: card.querySelector('[name="ai_processing_details"]').value });
   list.querySelectorAll(".v2-caption-card").forEach((card) => {
@@ -2764,27 +2790,54 @@ async function downloadStorageFile(bucket, path, fileName) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-async function loadPrivateWorkImage(target, bucket, path, alt) {
+async function loadPrivateWorkImage(
+  target,
+  bucket,
+  path,
+  alt,
+  fallbackBucket = null,
+  fallbackPath = null,
+) {
   if (!target || !path) return;
   const requestId = crypto.randomUUID();
   target.dataset.imageRequestId = requestId;
-  const { data, error } = await supabase.storage
-    .from(bucket)
-    .createSignedUrl(path, 900);
-  if (!target.isConnected || target.dataset.imageRequestId !== requestId) return;
-  if (error || !data?.signedUrl) {
-    target.replaceChildren(Object.assign(document.createElement("span"), { className: "muted", textContent: "画像を表示できませんでした。" }));
+  const candidates = [
+    { bucket, path },
+    { bucket: fallbackBucket, path: fallbackPath },
+  ].filter(
+    (candidate, index, items) =>
+      candidate.bucket &&
+      candidate.path &&
+      items.findIndex(
+        (item) =>
+          item.bucket === candidate.bucket && item.path === candidate.path,
+      ) === index,
+  );
+  for (const candidate of candidates) {
+    const { data, error } = await supabase.storage
+      .from(candidate.bucket)
+      .createSignedUrl(candidate.path, 900);
+    if (!target.isConnected || target.dataset.imageRequestId !== requestId) return;
+    if (error || !data?.signedUrl) continue;
+    const image = document.createElement("img");
+    image.alt = alt;
+    const loaded = await new Promise((resolve) => {
+      image.addEventListener("load", () => resolve(true), { once: true });
+      image.addEventListener("error", () => resolve(false), { once: true });
+      image.src = data.signedUrl;
+    });
+    if (!target.isConnected || target.dataset.imageRequestId !== requestId) return;
+    if (!loaded) continue;
+    target.replaceChildren(image);
     return;
   }
-  const image = document.createElement("img");
-  image.src = data.signedUrl;
-  image.alt = alt;
-  image.addEventListener("error", () => {
-    if (!target.isConnected || target.dataset.imageRequestId !== requestId) return;
-    target.replaceChildren(Object.assign(document.createElement("span"), { className: "muted", textContent: "この画像形式はブラウザで表示できません。" }));
-  }, { once: true });
-  if (!target.isConnected || target.dataset.imageRequestId !== requestId) return;
-  target.replaceChildren(image);
+  target.replaceChildren(
+    Object.assign(document.createElement("span"), {
+      className: "muted",
+      textContent:
+        "この画像はブラウザでプレビューできません。原画像のダウンロードをご利用ください。",
+    }),
+  );
 }
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
@@ -3643,7 +3696,7 @@ async function renderExhibitionParticipants(event) {
         .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
     list.insertAdjacentHTML(
       "beforeend",
-      `<article class="exhibitor-card" data-entry-id="${entry.id}"><div class="exhibitor-head"><div><span class="tag">${entry.application_state === "auto_cancelled" ? "自動取消" : entry.status === "submitted" ? "申込済み" : entry.status === "withdrawn" ? "取り下げ" : "下書き"}</span><h3>${esc(member.name || "部員情報なし")}</h3><p>${esc(member.member_no || "")} ${esc(affiliation)}</p>${Number(event.exhibition_workflow_version) === 2 ? `<p class="muted">表示名：${esc(entry.display_name_value || "未設定")}／予定 ${entry.planned_work_count || 0}作品</p>${entry.application_state === "auto_cancelled" && Number(entry.revival_count || 0) < 1 ? '<button type="button" class="secondary revive-v2-entry">例外的に復活</button>' : ""}` : ""}</div><span class="status">${works.length}作品</span></div>${entry.note ? `<p class="muted">出展備考：${esc(entry.note)}</p>` : ""}<div class="admin-work-list">${works.length ? works.map((work) => { const imagePath = work.preview_image_path || work.original_image_path; return `<section class="admin-work-card" data-work-id="${work.id}"><div class="admin-work-image">${imagePath ? `<span class="storage-image" data-storage-bucket="${work.preview_image_path ? "exhibition-previews" : "exhibition-originals"}" data-storage-path="${esc(imagePath)}" data-alt="${esc(work.title || "作品プレビュー")}">プレビュー読込中…</span>` : '<span class="muted">作品画像なし</span>'}${work.original_image_path ? `<button type="button" class="secondary download-original" data-original-path="${esc(work.original_image_path)}" data-file-name="${esc(managedOriginalFileName(member, work))}">原画像をダウンロード</button>` : ""}</div><div class="admin-work-copy"><div class="work-meta"><span class="tag">${work.display_no ? `No.${esc(work.display_no)}` : `WORK ${work.sort_order}`}</span><span>${esc(exhibitionWorkStatus(work.status))}</span></div><h3>${esc(work.title || "作品名未入力")}</h3><dl class="caption-details"><dt>向き</dt><dd>${esc(orientationLabel(work.orientation))}</dd><dt>出展サイズ</dt><dd>${esc(printSizeLabel(work.print_size, work.print_size_detail))}</dd><dt>作者</dt><dd>${work.artist_name ? esc(work.artist_name) : '<span class="muted">未入力</span>'}</dd><dt>Camera</dt><dd>${work.camera_name ? esc(work.camera_name) : '<span class="muted">未入力</span>'}</dd><dt>Lens, other</dt><dd>${work.lens_other ? esc(work.lens_other) : '<span class="muted">未入力</span>'}</dd><dt>Description</dt><dd class="caption-text">${work.description ? esc(work.description) : '<span class="muted">未入力</span>'}</dd></dl><p class="muted">アップロード元：${esc(work.original_file_name || "不明")}</p><p class="muted">管理ファイル名：${esc(managedOriginalFileName(member, work))}</p>${work.note ? `<p class="muted">作品備考：${esc(work.note)}</p>` : ""}<div class="work-admin-controls"><label>作品番号<input class="display-no" value="${esc(work.display_no || "")}" placeholder="例：01"></label><label>確認状態<select class="review-status"><option value="submitted" ${work.status === "submitted" || work.status === "draft" ? "selected" : ""}>提出済み</option><option value="accepted" ${work.status === "accepted" ? "selected" : ""}>確認済み</option><option value="rejected" ${work.status === "rejected" ? "selected" : ""}>要修正</option></select></label><button type="button" class="update-work">作品情報を更新</button></div></div><div class="admin-work-qr"><strong>Instagram QR</strong>${work.instagram_qr_path ? `<span class="storage-image qr-image" data-storage-path="${esc(work.instagram_qr_path)}" data-alt="${esc(`${work.title || "作品"}のInstagram QRコード`)}">QR読込中…</span><small>${esc(work.instagram_qr_file_name || "登録済み")}</small><button type="button" class="secondary download-qr" data-qr-path="${esc(work.instagram_qr_path)}" data-file-name="${esc(work.instagram_qr_file_name || "instagram-qr")}">QR画像をダウンロード</button>` : '<span class="muted">未登録</span>'}</div></section>`; }).join("") : '<p class="muted">作品はまだ登録されていません。</p>'}</div></article>`,
+      `<article class="exhibitor-card" data-entry-id="${entry.id}"><div class="exhibitor-head"><div><span class="tag">${entry.application_state === "auto_cancelled" ? "自動取消" : entry.status === "submitted" ? "申込済み" : entry.status === "withdrawn" ? "取り下げ" : "下書き"}</span><h3>${esc(member.name || "部員情報なし")}</h3><p>${esc(member.member_no || "")} ${esc(affiliation)}</p>${Number(event.exhibition_workflow_version) === 2 ? `<p class="muted">表示名：${esc(entry.display_name_value || "未設定")}／予定 ${entry.planned_work_count || 0}作品</p>${entry.application_state === "auto_cancelled" && Number(entry.revival_count || 0) < 1 ? '<button type="button" class="secondary revive-v2-entry">例外的に復活</button>' : ""}` : ""}</div><span class="status">${works.length}作品</span></div>${entry.note ? `<p class="muted">出展備考：${esc(entry.note)}</p>` : ""}<div class="admin-work-list">${works.length ? works.map((work) => { const imagePath = work.preview_image_path || work.original_image_path; return `<section class="admin-work-card" data-work-id="${work.id}"><div class="admin-work-image">${imagePath ? `<span class="storage-image" data-storage-bucket="${work.preview_image_path ? "exhibition-previews" : "exhibition-originals"}" data-storage-path="${esc(imagePath)}" data-fallback-bucket="${work.preview_image_path && work.original_image_path ? "exhibition-originals" : ""}" data-fallback-path="${esc(work.preview_image_path ? work.original_image_path || "" : "")}" data-alt="${esc(work.title || "作品プレビュー")}">プレビュー読込中…</span>` : '<span class="muted">作品画像なし</span>'}${work.original_image_path ? `<button type="button" class="secondary download-original" data-original-path="${esc(work.original_image_path)}" data-file-name="${esc(managedOriginalFileName(member, work))}">原画像をダウンロード</button>` : ""}</div><div class="admin-work-copy"><div class="work-meta"><span class="tag">${work.display_no ? `No.${esc(work.display_no)}` : `WORK ${work.sort_order}`}</span><span>${esc(exhibitionWorkStatus(work.status))}</span></div><h3>${esc(work.title || "作品名未入力")}</h3><dl class="caption-details"><dt>向き</dt><dd>${esc(orientationLabel(work.orientation))}</dd><dt>出展サイズ</dt><dd>${esc(printSizeLabel(work.print_size, work.print_size_detail))}</dd><dt>作者</dt><dd>${work.artist_name ? esc(work.artist_name) : '<span class="muted">未入力</span>'}</dd><dt>Camera</dt><dd>${work.camera_name ? esc(work.camera_name) : '<span class="muted">未入力</span>'}</dd><dt>Lens, other</dt><dd>${work.lens_other ? esc(work.lens_other) : '<span class="muted">未入力</span>'}</dd><dt>Description</dt><dd class="caption-text">${work.description ? esc(work.description) : '<span class="muted">未入力</span>'}</dd></dl><p class="muted">アップロード元：${esc(work.original_file_name || "不明")}</p><p class="muted">管理ファイル名：${esc(managedOriginalFileName(member, work))}</p>${work.note ? `<p class="muted">作品備考：${esc(work.note)}</p>` : ""}<div class="work-admin-controls"><label>作品番号<input class="display-no" value="${esc(work.display_no || "")}" placeholder="例：01"></label><label>確認状態<select class="review-status"><option value="submitted" ${work.status === "submitted" || work.status === "draft" ? "selected" : ""}>提出済み</option><option value="accepted" ${work.status === "accepted" ? "selected" : ""}>確認済み</option><option value="rejected" ${work.status === "rejected" ? "selected" : ""}>要修正</option></select></label><button type="button" class="update-work">作品情報を更新</button></div></div><div class="admin-work-qr"><strong>Instagram QR</strong>${work.instagram_qr_path ? `<span class="storage-image qr-image" data-storage-path="${esc(work.instagram_qr_path)}" data-alt="${esc(`${work.title || "作品"}のInstagram QRコード`)}">QR読込中…</span><small>${esc(work.instagram_qr_file_name || "登録済み")}</small><button type="button" class="secondary download-qr" data-qr-path="${esc(work.instagram_qr_path)}" data-file-name="${esc(work.instagram_qr_file_name || "instagram-qr")}">QR画像をダウンロード</button>` : '<span class="muted">未登録</span>'}</div></section>`; }).join("") : '<p class="muted">作品はまだ登録されていません。</p>'}</div></article>`,
     );
   });
   if (Number(event.exhibition_workflow_version) === 2 && event.smartphone_exhibition_enabled)
@@ -3663,17 +3716,45 @@ async function renderExhibitionParticipants(event) {
       renderExhibitionParticipants(event);
     };
   });
+  const consentNotSelectedDrafts = visibleWorks.filter(
+      ({ work }) =>
+        work.publication_consent === null &&
+        (Number(event.exhibition_workflow_version) === 2
+          ? work.workflow_state === "draft"
+          : work.status === "draft"),
+    ),
+    consentDataErrors = visibleWorks.filter(
+      ({ work }) =>
+        work.publication_consent === null &&
+        (Number(event.exhibition_workflow_version) === 2
+          ? work.workflow_state !== "draft"
+          : work.status !== "draft"),
+    );
   root
     .querySelector(".summary-strip")
     .insertAdjacentHTML(
       "beforeend",
-      `<span>掲載同意 ${visibleWorks.filter((item) => item.work.publication_consent === true).length}点</span><span>掲載不同意 ${visibleWorks.filter((item) => item.work.publication_consent === false).length}点</span><span>掲載未回答 ${visibleWorks.filter((item) => item.work.publication_consent === null).length}点</span>`,
+      `<span>掲載同意 ${visibleWorks.filter((item) => item.work.publication_consent === true).length}点</span><span>掲載不同意 ${visibleWorks.filter((item) => item.work.publication_consent === false).length}点</span><span>掲載可否未選択（Draft） ${consentNotSelectedDrafts.length}点</span>${consentDataErrors.length ? `<span class="status">掲載可否データ要確認 ${consentDataErrors.length}点</span>` : ""}`,
     );
   root.querySelectorAll(".admin-work-card").forEach((card) => {
     const work = visibleWorks.find(
       (item) => item.work.id === card.dataset.workId,
     )?.work;
     if (!work) return;
+    const consentIsDraft =
+        work.publication_consent === null &&
+        (Number(event.exhibition_workflow_version) === 2
+          ? work.workflow_state === "draft"
+          : work.status === "draft"),
+      consentIsInvalid =
+        work.publication_consent === null && !consentIsDraft;
+    if (consentIsInvalid)
+      card
+        .querySelector(".admin-work-copy")
+        .insertAdjacentHTML(
+          "afterbegin",
+          '<div class="notice error"><strong>掲載可否のデータを確認してください。</strong><p>正式提出後の作品ですが、同意・不同意が記録されていません。通常のWorkflow v2では正式提出時に拒否される状態です。</p></div>',
+        );
     card.querySelector(".caption-details").insertAdjacentHTML(
       "beforeend",
       `<dt>サイト掲載</dt><dd>${
@@ -3681,7 +3762,9 @@ async function renderExhibitionParticipants(event) {
           ? "同意"
           : work.publication_consent === false
             ? "不同意（NO IMAGE）"
-            : '<span class="muted">未回答</span>'
+            : consentIsDraft
+              ? '<span class="muted">未選択（Draft・正式提出前）</span>'
+              : '<span class="status">データ要確認：未選択</span>'
       }</dd>`,
     );
     card.querySelector(".work-admin-controls").insertAdjacentHTML(
@@ -3690,7 +3773,7 @@ async function renderExhibitionParticipants(event) {
     );
     card.querySelector(".work-admin-controls").insertAdjacentHTML(
       "beforebegin",
-      `<div class="public-image-controls"><span>${work.public_release && work.public_image_path ? "透かし入り公開画像：生成済み" : work.publication_consent === false ? "掲載不同意：NO IMAGEで公開" : "透かし入り公開画像：未生成"}</span><button type="button" class="secondary generate-public-image" ${work.publication_consent === true && work.preview_image_path ? "" : "disabled"}>${work.public_release ? "公開画像を再生成" : "公開画像を生成"}</button></div>`,
+      `<div class="public-image-controls"><span>${work.public_release && work.public_image_path ? "透かし入り公開画像：生成済み" : work.publication_consent === false ? "掲載不同意：NO IMAGEで公開" : work.publication_consent === null ? "掲載可否未選択：公開画像は生成できません" : "透かし入り公開画像：未生成"}</span><button type="button" class="secondary generate-public-image" ${work.publication_consent === true && work.preview_image_path ? "" : "disabled"}>${work.public_release ? "公開画像を再生成" : "公開画像を生成"}</button></div>`,
     );
     if (Number(event.exhibition_workflow_version) === 2) {
       card.querySelector(".work-translation-fields")?.remove();
@@ -3874,6 +3957,8 @@ async function renderExhibitionParticipants(event) {
       target.dataset.storageBucket || "exhibition-previews",
       target.dataset.storagePath,
       target.dataset.alt || "作品画像",
+      target.dataset.fallbackBucket || null,
+      target.dataset.fallbackPath || null,
     ),
   );
   root.querySelectorAll(".generate-public-image").forEach((button) => {
