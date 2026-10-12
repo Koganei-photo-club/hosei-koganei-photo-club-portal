@@ -2821,7 +2821,7 @@ async function renderExhibitionSimulator(
         .order("display_no"),
       supabase
         .from("exhibition_layouts")
-        .select("*,exhibition_placements(id,status)")
+        .select("*,exhibition_placements(id,status,work_id,display_item_id,wall_id)")
         .eq("event_id", event.id)
         .order("updated_at", { ascending: false }),
       Number(event.exhibition_workflow_version) === 2
@@ -2874,6 +2874,21 @@ async function renderExhibitionSimulator(
       layouts = layoutResult.data || [],
       smartphoneGroup = groupResult.data,
       venue = venues.find((item) => item.id === event.exhibition_venue_id),
+      candidateSourceIds = new Set(
+        works.flatMap((work) =>
+          [work.id, work.regular_work_id].filter(Boolean),
+        ),
+      ),
+      orphanPlacementsByLayout = layouts
+        .map((layout) => ({
+          layout,
+          placements: (layout.exhibition_placements || []).filter(
+            (placement) =>
+              placement.status !== "removed" &&
+              !candidateSourceIds.has(placementDisplayItemId(placement)),
+          ),
+        }))
+        .filter((item) => item.placements.length),
       hasActivePlacements = layouts.some((layout) =>
         (layout.exhibition_placements || []).some(
           (placement) => placement.status !== "removed",
@@ -2886,6 +2901,14 @@ async function renderExhibitionSimulator(
         : hasActivePlacements
           ? "配置済みの展示物があるため、会場は変更できません。すべての配置を解除してから変更してください。"
           : "配置開始前のため、使用会場を変更できます。";
+    const orphanPlacementCleanupHtml = orphanPlacementsByLayout.length
+      ? `<section class="simulator-section"><div class="section-head compact"><h3>配置データの整理</h3><p>取り下げ等により現在の候補一覧から消えた展示物の配置が残っています。作品・履歴は削除せず、配置だけを解除できます。</p></div><div class="dimension-list">${orphanPlacementsByLayout
+          .map(
+            ({ layout, placements }) =>
+              `<div class="dimension-row"><div><strong>${esc(layout.name)} v${layout.version_no}</strong><small>画面に表示できない配置：${placements.length}件</small></div><div></div><div></div>${layout.current_finalization_id || ["approved", "archived"].includes(layout.status) ? '<button type="button" class="secondary" disabled>確定済みのため変更不可</button>' : `<button type="button" class="secondary cleanup-orphan-placements" data-layout-id="${layout.id}">孤立配置を解除（${placements.length}件）</button>`}</div>`,
+          )
+          .join("")}</div></section>`
+      : "";
     const saveVenueSelection = async (form) => {
       const values = Object.fromEntries(new FormData(form));
       if (venueChangeLocked) throw new Error(venueChangeReason);
@@ -2974,7 +2997,29 @@ async function renderExhibitionSimulator(
     const regularDimensionWorks = works.filter(
       (work) => work.item_type !== "smartphone_group",
     );
-    root.innerHTML = `<div class="entry-heading"><div><span class="tag">EXHIBITION LAYOUT PLAN</span><h2>${esc(event.exhibition_title || event.title)}｜展示シミュレータ</h2><p class="muted">会場：${esc(venue.name)}／これは展示予定です。実際の展示記録ではありません。</p></div></div><section class="simulator-section"><div class="section-head compact"><h3>0. 会場設定</h3><p>${esc(venueChangeReason)}</p></div><form id="venueChangeForm" class="form-grid compact-form"><label class="full">使用する会場<select name="venue_id" ${venueChangeLocked ? "disabled" : ""}>${venues.filter((item) => item.status === "active").map((item) => `<option value="${item.id}" ${item.id === venue.id ? "selected" : ""}>${esc(item.name)}</option>`).join("")}<option value="">新しい会場を登録する</option></select></label><label>新しい会場名<input name="name" placeholder="例：EAST館 202" ${venueChangeLocked ? "disabled" : ""}></label><label>所在地・建物情報<input name="address" ${venueChangeLocked ? "disabled" : ""}></label><label class="full">会場メモ<textarea name="notes" rows="2" ${venueChangeLocked ? "disabled" : ""}></textarea></label><div class="actions full"><button ${venueChangeLocked ? "disabled" : ""}>${venueChangeLocked ? "会場変更不可" : "会場設定を保存"}</button></div></form></section><section class="simulator-section"><div class="section-head compact"><h3>1. 壁面</h3></div><div class="wall-summary">${walls.length ? walls.map((wall) => `<span>${esc(wall.name)}：${wall.width_mm} × ${wall.height_mm} mm</span>`).join("") : '<span class="muted">壁面が未登録です。</span>'}</div><form id="wallForm" class="form-grid compact-form"><label>壁面名<input name="name" required placeholder="例：正面壁面"></label><label>表示順<input type="number" name="display_order" min="1" required value="${walls.length + 1}"></label><label>幅（mm）<input type="number" name="width_mm" min="1" step="0.01" required></label><label>高さ（mm）<input type="number" name="height_mm" min="1" step="0.01" required></label><label>壁面色<input type="color" name="background_color" value="#FFFFFF"></label><label class="full">注意事項<input name="notes" placeholder="例：右端500mmは配電盤"></label><div class="actions full"><button>壁面を追加</button></div></form></section><section class="simulator-section"><div class="section-head compact"><h3>2. 展示物の物理仕様</h3><p>${Number(event.exhibition_workflow_version) === 2 ? "通常作品はAccepted Work Snapshot、スマホ集合展示は管理者設定の占有外寸を使用します。" : "単写真は用紙外寸が初期入力されています。額装・組み写真は実際に壁を占有する外寸へ修正してください。"}</p></div><div class="dimension-list">${regularDimensionWorks.length ? regularDimensionWorks.map((work) => `<form class="dimension-row" data-work-id="${work.id}"><div><strong>${layoutItemHeading(work)}</strong><small>${esc(work.exhibition_entries?.members?.name || "")}／${esc(printSizeLabel(work.print_size, work.print_size_detail))}${work.current_accepted_snapshot_id ? `／Snapshot ${esc(work.current_accepted_snapshot_id.slice(0, 8))}` : ""}</small></div><label>幅<input type="number" name="width" min="1" step="0.01" value="${work.occupied_width_mm || ""}" required ${Number(event.exhibition_workflow_version) === 2 ? "disabled" : ""}></label><label>高さ<input type="number" name="height" min="1" step="0.01" value="${work.occupied_height_mm || ""}" required ${Number(event.exhibition_workflow_version) === 2 ? "disabled" : ""}></label>${Number(event.exhibition_workflow_version) === 2 ? "" : '<button class="secondary">外寸を保存</button>'}</form>`).join("") : '<p class="muted">配置可能な確認済み通常作品がありません。</p>'}</div></section><section class="simulator-section"><div class="section-head compact"><h3>3. Layout Plan</h3></div><div class="layout-toolbar"><select id="layoutSelect"><option value="">配置案を選択</option>${layouts.map((layout) => `<option value="${layout.id}" ${layout.id === currentLayout?.id ? "selected" : ""}>${esc(layout.name)} v${layout.version_no}${layout.is_current ? "（現在案）" : ""}</option>`).join("")}</select><form id="layoutForm" class="inline-field"><input name="name" required placeholder="例：第1案"><button>新しい配置案を作成</button></form></div>${currentLayout ? `<div class="layout-status"><strong>${esc(currentLayout.name)} v${currentLayout.version_no}</strong><span>${currentLayout.status === "approved" ? "確定済みPlan" : currentLayout.status === "review" ? "確認中" : currentLayout.status === "archived" ? "保管" : "下書き"}</span></div><div class="unplaced-works"><h4>未配置展示物（${unplaced.length}点）</h4>${unplaced.length ? unplaced.map((work) => `<div class="unplaced-work"><span>${layoutItemHeading(work)}</span>${work.occupied_width_mm && walls.length ? `<select data-wall-choice><option value="">配置先の壁面</option>${walls.filter((wall) => wall.usable).map((wall) => `<option value="${wall.id}">${esc(wall.name)}</option>`).join("")}</select><button class="place-work secondary" data-work-id="${work.id}">配置</button>` : '<small class="muted">占有外寸または壁面が未設定です。</small>'}</div>`).join("") : '<p class="muted">すべての展示物が配置されています。</p>'}</div><div class="wall-canvases">${walls.map((wall) => renderWallCanvas(wall, placements.filter((item) => item.wall_id === wall.id), workById)).join("")}</div>` : '<div class="notice">配置案を作成すると、展示物を壁面へ配置できます。</div>'}</section>`;
+    root.innerHTML = `<div class="entry-heading"><div><span class="tag">EXHIBITION LAYOUT PLAN</span><h2>${esc(event.exhibition_title || event.title)}｜展示シミュレータ</h2><p class="muted">会場：${esc(venue.name)}／これは展示予定です。実際の展示記録ではありません。</p></div></div><section class="simulator-section"><div class="section-head compact"><h3>0. 会場設定</h3><p>${esc(venueChangeReason)}</p></div><form id="venueChangeForm" class="form-grid compact-form"><label class="full">使用する会場<select name="venue_id" ${venueChangeLocked ? "disabled" : ""}>${venues.filter((item) => item.status === "active").map((item) => `<option value="${item.id}" ${item.id === venue.id ? "selected" : ""}>${esc(item.name)}</option>`).join("")}<option value="">新しい会場を登録する</option></select></label><label>新しい会場名<input name="name" placeholder="例：EAST館 202" ${venueChangeLocked ? "disabled" : ""}></label><label>所在地・建物情報<input name="address" ${venueChangeLocked ? "disabled" : ""}></label><label class="full">会場メモ<textarea name="notes" rows="2" ${venueChangeLocked ? "disabled" : ""}></textarea></label><div class="actions full"><button ${venueChangeLocked ? "disabled" : ""}>${venueChangeLocked ? "会場変更不可" : "会場設定を保存"}</button></div></form></section>${orphanPlacementCleanupHtml}<section class="simulator-section"><div class="section-head compact"><h3>1. 壁面</h3></div><div class="wall-summary">${walls.length ? walls.map((wall) => `<span>${esc(wall.name)}：${wall.width_mm} × ${wall.height_mm} mm</span>`).join("") : '<span class="muted">壁面が未登録です。</span>'}</div><form id="wallForm" class="form-grid compact-form"><label>壁面名<input name="name" required placeholder="例：正面壁面"></label><label>表示順<input type="number" name="display_order" min="1" required value="${walls.length + 1}"></label><label>幅（mm）<input type="number" name="width_mm" min="1" step="0.01" required></label><label>高さ（mm）<input type="number" name="height_mm" min="1" step="0.01" required></label><label>壁面色<input type="color" name="background_color" value="#FFFFFF"></label><label class="full">注意事項<input name="notes" placeholder="例：右端500mmは配電盤"></label><div class="actions full"><button>壁面を追加</button></div></form></section><section class="simulator-section"><div class="section-head compact"><h3>2. 展示物の物理仕様</h3><p>${Number(event.exhibition_workflow_version) === 2 ? "通常作品はAccepted Work Snapshot、スマホ集合展示は管理者設定の占有外寸を使用します。" : "単写真は用紙外寸が初期入力されています。額装・組み写真は実際に壁を占有する外寸へ修正してください。"}</p></div><div class="dimension-list">${regularDimensionWorks.length ? regularDimensionWorks.map((work) => `<form class="dimension-row" data-work-id="${work.id}"><div><strong>${layoutItemHeading(work)}</strong><small>${esc(work.exhibition_entries?.members?.name || "")}／${esc(printSizeLabel(work.print_size, work.print_size_detail))}${work.current_accepted_snapshot_id ? `／Snapshot ${esc(work.current_accepted_snapshot_id.slice(0, 8))}` : ""}</small></div><label>幅<input type="number" name="width" min="1" step="0.01" value="${work.occupied_width_mm || ""}" required ${Number(event.exhibition_workflow_version) === 2 ? "disabled" : ""}></label><label>高さ<input type="number" name="height" min="1" step="0.01" value="${work.occupied_height_mm || ""}" required ${Number(event.exhibition_workflow_version) === 2 ? "disabled" : ""}></label>${Number(event.exhibition_workflow_version) === 2 ? "" : '<button class="secondary">外寸を保存</button>'}</form>`).join("") : '<p class="muted">配置可能な確認済み通常作品がありません。</p>'}</div></section><section class="simulator-section"><div class="section-head compact"><h3>3. Layout Plan</h3></div><div class="layout-toolbar"><select id="layoutSelect"><option value="">配置案を選択</option>${layouts.map((layout) => `<option value="${layout.id}" ${layout.id === currentLayout?.id ? "selected" : ""}>${esc(layout.name)} v${layout.version_no}${layout.is_current ? "（現在案）" : ""}</option>`).join("")}</select><form id="layoutForm" class="inline-field"><input name="name" required placeholder="例：第1案"><button>新しい配置案を作成</button></form></div>${currentLayout ? `<div class="layout-status"><strong>${esc(currentLayout.name)} v${currentLayout.version_no}</strong><span>${currentLayout.status === "approved" ? "確定済みPlan" : currentLayout.status === "review" ? "確認中" : currentLayout.status === "archived" ? "保管" : "下書き"}</span></div><div class="unplaced-works"><h4>未配置展示物（${unplaced.length}点）</h4>${unplaced.length ? unplaced.map((work) => `<div class="unplaced-work"><span>${layoutItemHeading(work)}</span>${work.occupied_width_mm && walls.length ? `<select data-wall-choice><option value="">配置先の壁面</option>${walls.filter((wall) => wall.usable).map((wall) => `<option value="${wall.id}">${esc(wall.name)}</option>`).join("")}</select><button class="place-work secondary" data-work-id="${work.id}">配置</button>` : '<small class="muted">占有外寸または壁面が未設定です。</small>'}</div>`).join("") : '<p class="muted">すべての展示物が配置されています。</p>'}</div><div class="wall-canvases">${walls.map((wall) => renderWallCanvas(wall, placements.filter((item) => item.wall_id === wall.id), workById)).join("")}</div>` : '<div class="notice">配置案を作成すると、展示物を壁面へ配置できます。</div>'}</section>`;
+
+    root.querySelectorAll(".cleanup-orphan-placements").forEach((button) => {
+      button.onclick = async () => {
+        const target = orphanPlacementsByLayout.find(
+          (item) => item.layout.id === button.dataset.layoutId,
+        );
+        if (!target?.placements.length) return;
+        if (!confirm(`「${target.layout.name} v${target.layout.version_no}」の画面に表示できない配置 ${target.placements.length}件を解除しますか？\n\n作品・提出履歴は削除されません。`)) return;
+        button.disabled = true;
+        const ids = target.placements.map((placement) => placement.id);
+        const { error } = await supabase
+          .from("exhibition_placements")
+          .update({ status: "removed" })
+          .in("id", ids);
+        if (error) {
+          button.disabled = false;
+          return failure(error);
+        }
+        await renderExhibitionSimulator(event, currentLayout?.id, false);
+        message(`${ids.length}件の孤立配置を解除しました。作品・履歴は保持されています。`);
+      };
+    });
 
     root.querySelector("#venueChangeForm").onsubmit = async (submit) => {
       submit.preventDefault();
