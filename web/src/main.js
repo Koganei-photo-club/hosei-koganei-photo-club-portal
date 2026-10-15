@@ -1043,6 +1043,11 @@ async function renderExhibitionShiftMember(event) {
     assignments = data.assignments || [],
     slots = data.slots || [];
   root.innerHTML = `<div class="entry-heading"><div><span class="tag">SHIFT</span><h2>シフト希望・確定シフト</h2></div></div><div class="section-message notice hidden" role="status" aria-live="polite"></div><p class="muted">出展申込とは独立しています。出展しない場合もシフト希望だけを提出できます。</p>${data.canSubmitPreferences ? "" : '<div class="notice">シフト希望の受付は終了しています。保存済みの希望と公開シフトは引き続き確認できます。</div>'}<form id="shiftPreferenceForm" class="shift-slot-list">${slots.map((slot) => { const id=slot.id || slot,label=slot.label || slot,p=preferences[id];return `<label class="shift-preference-row"><span>${esc(label)}</span><select data-slot-id="${esc(id)}" data-slot-label="${esc(label)}" ${data.canSubmitPreferences ? "" : "disabled"}><option value="">希望なし</option><option value="preferred" ${p?.preference === "preferred" ? "selected" : ""}>優先して参加可能</option><option value="available" ${p?.preference === "available" ? "selected" : ""}>参加可能</option><option value="unavailable" ${p?.preference === "unavailable" ? "selected" : ""}>参加不可</option></select></label>`;}).join("")}<div class="actions"><button ${data.canSubmitPreferences ? "" : "disabled"}>シフト希望を保存</button></div></form><section class="published-shift"><h3>公開済み確定シフト</h3>${data.publishedVersion ? `<p class="status">シフト v${data.publishedVersion.versionNo}　公開日時：${fmt(data.publishedVersion.publishedAt)}</p><div class="shift-timeline">${slots.map((slot) => { const id=slot.id || slot,label=slot.label || slot,people=assignments.filter((item)=>item.slotId===id);return `<article class="shift-timeline-slot ${people.some((item)=>item.isMine) ? "is-mine" : ""}"><h4>${esc(label)}</h4>${people.length ? `<ul>${people.map((item)=>`<li class="${item.isMine ? "my-shift" : ""}">${esc(item.memberName)}${item.isMine ? "（自分）" : ""}</li>`).join("")}</ul>` : '<p class="muted">割当なし</p>'}</article>`;}).join("")}</div>` : '<div class="notice">確定シフトはまだ公開されていません。</div>'}</section>`;
+  if (data.shiftPreferenceDeadline)
+    root.querySelector(".entry-heading").insertAdjacentHTML(
+      "afterend",
+      `<p class="muted">シフト希望締切：${fmt(data.shiftPreferenceDeadline)}</p>`,
+    );
   root.querySelector("#shiftPreferenceForm").onsubmit = async (submit) => {
     submit.preventDefault();
     const p_preferences = [...root.querySelectorAll("[data-slot-id]")].filter((select)=>select.value).map((select)=>({slotId:select.dataset.slotId,preference:select.value,note:""}));
@@ -2444,6 +2449,29 @@ async function renderAdminExhibitionShiftSchedule(event) {
     draft = versions.find((version)=>version.state === "draft"),
     versionAssignments = draft ? assignments.filter((item)=>item.versionId === draft.id) : [];
   root.innerHTML = `<div class="entry-heading"><div><span class="tag">SHIFT SCHEDULE</span><h2>${esc(event.exhibition_title || event.title)}｜シフト調整</h2></div><button id="createShiftDraft" class="secondary" ${draft ? "disabled" : ""}>${draft ? `v${draft.version_no} Draft編集中` : "新しいDraftを作成"}</button></div><p class="muted">希望、編集中Draft、保存版、公開版は別データです。公開中の版は次版を公開するまで変更されません。</p><div class="summary-strip">${versions.map((version)=>`<span>v${version.version_no} ${esc(version.state)}${version.published_at ? `・${fmt(version.published_at)}` : ""}</span>`).join("") || "<span>版なし</span>"}</div>${draft ? `<div class="shift-admin-grid">${(data.slots || []).map((slot)=>{const id=slot.id||slot,label=slot.label||slot,slotPrefs=preferences.filter((item)=>item.slotId===id&&item.preference!=="unavailable"),slotAssignments=versionAssignments.filter((item)=>item.slotId===id),shortage=Math.max(0,Number(data.minimumPeople)-slotAssignments.length);return `<article class="shift-admin-slot" data-slot-id="${esc(id)}"><div class="work-meta"><h3>${esc(label)}</h3><span class="${shortage ? "capacity-warning" : "status"}">${slotAssignments.length}/${data.minimumPeople}名${shortage ? `（不足${shortage}名）` : ""}</span></div><h4>現在の割当</h4><ul>${slotAssignments.map((item)=>`<li>${esc(item.memberName)} <small>${item.source === "admin" ? "管理者追加" : "希望者"}</small><button class="danger remove-shift-member" data-member-id="${item.memberId}">解除</button></li>`).join("") || '<li class="muted">未割当</li>'}</ul><h4>希望者</h4><div class="actions shift-candidates">${slotPrefs.map((item)=>`<button class="secondary add-shift-member" data-member-id="${item.memberId}" ${slotAssignments.some((assigned)=>assigned.memberId===item.memberId)?"disabled":""}>${esc(item.memberName)}（${item.preference === "preferred" ? "優先" : "可"}）</button>`).join("") || '<span class="muted">希望者なし</span>'}</div><label>部員を手動追加<select class="manual-shift-member"><option value="">選択</option>${members.filter((member)=>!slotAssignments.some((assigned)=>assigned.memberId===member.id)).map((member)=>`<option value="${member.id}">${esc(member.name)}（${esc(member.grade || member.memberNo || "")}）</option>`).join("")}</select></label><button class="secondary manual-add-shift">追加</button></article>`;}).join("")}</div><div class="actions"><button id="saveShiftVersion">v${draft.version_no}を保存</button></div>` : '<div class="notice">編集中のDraftはありません。公開版を変更する場合も、新しいDraftを作成してください。</div>'}<section class="panel nested-fields"><h3>保存・公開履歴</h3>${versions.filter((version)=>version.state!=="draft").map((version)=>`<article class="admin-row"><div><strong>シフト v${version.version_no}</strong><p>${esc(version.state)}${version.saved_at ? `／保存 ${fmt(version.saved_at)}` : ""}${version.published_at ? `／公開 ${fmt(version.published_at)}` : ""}</p>${version.shortage_override_reason ? `<p class="capacity-warning">人数不足例外：${esc(version.shortage_override_reason)}</p>` : ""}</div>${version.state === "saved" ? `<button class="publish-shift-version" data-version-id="${version.id}">この版を公開</button>` : data.currentPublishedVersionId === version.id ? '<span class="status">現在公開中</span>' : ""}</article>`).join("") || '<p class="muted">履歴はありません。</p>'}</section>`;
+  const deadlineValue = data.shiftPreferenceDeadline
+    ? new Date(new Date(data.shiftPreferenceDeadline) - new Date(data.shiftPreferenceDeadline).getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+    : "";
+  root.querySelector(".summary-strip").insertAdjacentHTML(
+    "beforebegin",
+    `<section class="panel nested-fields"><h3>シフト希望受付</h3><p class="muted">出展申込締切とは独立しています。この変更で出展申込や写真展サイトの状態は変わりません。</p><div class="form-grid"><label>シフト希望締切<input id="shiftPreferenceDeadline" type="datetime-local" value="${deadlineValue}"></label><label>変更理由（延長時は任意・短縮時は必須）<input id="shiftPreferenceDeadlineReason" maxlength="1000"></label></div><div class="actions"><button id="updateShiftPreferenceDeadline" class="secondary">締切を更新</button><span class="status">${data.shiftPreferencesOpen ? "受付中" : "受付終了"}</span></div></section>`,
+  );
+  root.querySelector("#updateShiftPreferenceDeadline").onclick = async () => {
+    const input = root.querySelector("#shiftPreferenceDeadline"),
+      reason = root.querySelector("#shiftPreferenceDeadlineReason").value.trim();
+    if (!input.value) return failure(new Error("シフト希望締切を入力してください。"));
+    if (!confirm(`シフト希望締切を ${fmt(new Date(input.value).toISOString())} に変更しますか？\n出展申込締切は変更されません。`)) return;
+    const button = root.querySelector("#updateShiftPreferenceDeadline");
+    button.disabled = true;
+    const result = await supabase.rpc("admin_update_exhibition_shift_preference_deadline_v1", {
+      p_event_id: event.id,
+      p_deadline: new Date(input.value).toISOString(),
+      p_reason: reason,
+    });
+    if (result.error) { button.disabled = false; return failure(result.error); }
+    await renderAdminExhibitionShiftSchedule(event);
+    message("シフト希望締切を更新しました。出展申込締切は変更されていません。");
+  };
   root.querySelector("#createShiftDraft").onclick = async()=>{const result=await supabase.rpc("admin_create_exhibition_shift_schedule_draft_v1",{p_event_id:event.id});if(result.error)return failure(result.error);renderAdminExhibitionShiftSchedule(event);};
   const assign = async(slotId,memberId,assigned)=>{const result=await supabase.rpc("admin_set_exhibition_shift_assignment_v1",{p_version_id:draft.id,p_slot_id:slotId,p_member_id:memberId,p_assigned:assigned});if(result.error)return failure(result.error);renderAdminExhibitionShiftSchedule(event);};
   root.querySelectorAll(".shift-admin-slot").forEach((card)=>{

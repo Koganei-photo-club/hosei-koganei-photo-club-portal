@@ -133,6 +133,7 @@ begin
     exhibition_work_submission_deadline=now()-interval '3 hours',exhibition_revision_deadline=now()-interval '2 hours',
     exhibition_caption_deadline=now()-interval '1 hour' where id=event_id;
   perform set_config('app.exhibition_workflow_rpc','off',true);
+  perform public.admin_update_exhibition_shift_preference_deadline_v1(event_id,now()-interval '5 hours','検証上の受付終了');
   perform set_config('request.jwt.claims',jsonb_build_object('email','__shift_only__@example.invalid','role','authenticated')::text,true);
   if not exists(select 1 from jsonb_array_elements(public.get_my_exhibition_hub_v1()) item where (item->>'eventId')::uuid=event_id)
     or (public.get_my_exhibition_shift_workspace_v1(event_id)->>'canSubmitPreferences')::boolean
