@@ -496,8 +496,9 @@ async function getContext() {
 async function renderPortal(context, maintenance = null) {
   layout(
     "活動ポータル",
-    '<button id="logout" class="secondary">ログアウト</button>',
+    '<button id="logout" class="secondary portal-logout">ログアウト</button>',
   );
+  document.querySelector(".site-header")?.classList.add("portal-header");
   document.querySelector("#logout").onclick = () => supabase.auth.signOut();
   try {
     if (context.admin)
@@ -505,14 +506,14 @@ async function renderPortal(context, maintenance = null) {
         .querySelector(".header-actions")
         .insertAdjacentHTML(
           "afterbegin",
-          '<a class="button secondary" href="#/admin">管理画面</a>',
+          '<a class="button secondary portal-admin-link" href="#/admin">管理画面</a>',
         );
     if (maintenance?.isMaintenanceAdmin)
       document
         .querySelector(".header-actions")
         .insertAdjacentHTML(
           "afterbegin",
-          '<a class="button secondary" href="#/maintenance-admin">メンテナンス管理</a>',
+          '<a class="button secondary portal-maintenance-link" href="#/maintenance-admin">メンテナンス管理</a>',
         );
     document.querySelector(".header-actions").insertAdjacentHTML(
       "afterbegin",
