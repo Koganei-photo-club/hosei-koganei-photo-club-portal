@@ -108,6 +108,61 @@ function setupExhibitionMyPageNavigation() {
   });
 }
 
+function setupExhibitionCategoryNavigation(smartphoneEnabled) {
+  const view = document.querySelector("#view"), application = view?.querySelector("#exhibitionApplication");
+  if (!view || !application || !view.querySelector("#v2WorkManager")) return;
+  application.insertAdjacentHTML("afterend", `<section id="exhibitionWorkspaceSelector" class="panel exhibition-workspace-selector exhibition-scroll-target"><div><span class="tag">EXHIBITION WORKSPACE</span><h2>作品・キャプション</h2></div><div class="exhibition-workspace-selects"><label>大分類<select id="exhibitionMajorCategory"><option value="works">作品</option><option value="captions">キャプション</option></select></label><label>中分類<select id="exhibitionMiddleCategory"></select></label><label id="exhibitionMinorCategoryField" class="hidden">小分類<select id="exhibitionMinorCategory"></select></label></div><p id="exhibitionWorkspaceHelp" class="muted"></p></section>`);
+  const major = view.querySelector("#exhibitionMajorCategory"), middle = view.querySelector("#exhibitionMiddleCategory"),
+    minorField = view.querySelector("#exhibitionMinorCategoryField"), minor = view.querySelector("#exhibitionMinorCategory"),
+    help = view.querySelector("#exhibitionWorkspaceHelp"), regular = view.querySelector("#v2WorkManager"),
+    smartphone = view.querySelector("#smartphoneWorkManager"), captions = view.querySelector("#v2CaptionManager");
+  const setReadOnly = (root, readOnly) => {
+    if (!root) return;
+    root.classList.toggle("is-summary-view", readOnly);
+    root.querySelectorAll("input,select,textarea,button").forEach((control) => {
+      if (readOnly && !control.disabled) { control.disabled = true; control.dataset.workspaceDisabled = "true"; }
+      else if (!readOnly && control.dataset.workspaceDisabled === "true") { control.disabled = false; delete control.dataset.workspaceDisabled; }
+    });
+  };
+  const captionCards = () => [...(captions?.querySelectorAll(".v2-caption-card") || [])];
+  const renderMinor = () => {
+    const cards = captionCards(), current = minor.value;
+    minor.innerHTML = cards.map((card, index) => `<option value="${esc(card.dataset.workId)}">${esc(card.querySelector(".tag")?.textContent || `作品${index + 1}`)}</option>`).join("");
+    if (cards.some((card) => card.dataset.workId === current)) minor.value = current;
+  };
+  const apply = () => {
+    const isWorks = major.value === "works", mode = middle.value;
+    regular.classList.toggle("hidden", !isWorks || !["regular", "all"].includes(mode));
+    smartphone?.classList.toggle("hidden", !isWorks || !["smartphone", "all"].includes(mode));
+    captions?.classList.toggle("hidden", isWorks || !["regular", "all"].includes(mode));
+    setReadOnly(regular, isWorks && mode === "all");
+    setReadOnly(smartphone, isWorks && mode === "all");
+    setReadOnly(captions, !isWorks && mode === "all");
+    minorField.classList.toggle("hidden", isWorks || mode !== "regular" || !captionCards().length);
+    captionCards().forEach((card) => card.classList.toggle("hidden", !isWorks && mode === "regular" && card.dataset.workId !== minor.value));
+    help.textContent = isWorks
+      ? mode === "all" ? "個人枠とスマホ枠をまとめて確認できます。この表示では登録・修正操作はできません。" : `${mode === "regular" ? "個人枠" : "スマホ枠"}の作品だけを表示しています。`
+      : mode === "all" ? "キャプション対象の個人枠作品と登録内容をまとめて確認できます。この表示では登録・修正操作はできません。" : "確認済みとなった個人枠作品を選び、キャプションを入力・修正できます。";
+  };
+  const renderMiddle = () => {
+    const previous = middle.value;
+    middle.innerHTML = major.value === "works"
+      ? `<option value="regular">個人枠</option>${smartphoneEnabled ? '<option value="smartphone">スマホ枠</option>' : ""}<option value="all">すべて表示</option>`
+      : '<option value="regular">個人枠</option><option value="all">すべて表示</option>';
+    if ([...middle.options].some((option) => option.value === previous)) middle.value = previous;
+    renderMinor(); apply();
+  };
+  major.onchange = renderMiddle; middle.onchange = apply; minor.onchange = apply;
+  renderMiddle();
+  const pending = pendingExhibitionActionTarget;
+  if (pending?.section === "caption") { major.value = "captions"; renderMiddle(); middle.value = "regular"; renderMinor(); if (pending.workId) minor.value = pending.workId; apply(); }
+  else if (pending?.section === "smartphone" && smartphoneEnabled) { major.value = "works"; renderMiddle(); middle.value = "smartphone"; apply(); }
+  view.querySelectorAll('.exhibition-mypage-nav button[data-section="v2WorkManager"], .exhibition-mypage-nav button[data-section="v2CaptionManager"]').forEach((button) => {
+    button.disabled = button.dataset.section === "v2CaptionManager" && !captions;
+    button.onclick = () => { major.value = button.dataset.section === "v2CaptionManager" ? "captions" : "works"; renderMiddle(); view.querySelector("#exhibitionWorkspaceSelector")?.scrollIntoView({ behavior: "smooth", block: "start" }); };
+  });
+}
+
 function focusPendingExhibitionAction() {
   const pending = pendingExhibitionActionTarget;
   if (!pending) return;
@@ -515,7 +570,7 @@ async function renderPortal(context, maintenance = null) {
       membership = context.member?.membership_years?.find(
         (y) => y.fiscal_year === fiscalYear() && y.active,
       );
-    view.innerHTML = `<aside id="notificationPanel" class="notification-panel hidden" aria-label="通知"><div class="notification-panel-head"><h2>通知</h2><button id="closeNotificationPanel" class="secondary" type="button">閉じる</button></div><div class="notification-tabs" role="tablist"><button type="button" data-notification-tab="actions">対応事項 <span id="notificationActionTabCount"></span></button><button type="button" data-notification-tab="notices">お知らせ <span id="notificationNoticeTabCount"></span></button></div><div id="notificationPanelBody" class="notification-panel-body"></div></aside><div id="notificationBackdrop" class="notification-backdrop hidden"></div><section class="panel member-home-card"><span class="tag">MEMBER</span><h2>${esc(context.member?.name || context.email)}さん</h2>${context.member ? `<p>${esc([context.member.grade, context.member.faculty || context.member.graduate_school, context.member.department || context.member.major].filter(Boolean).join("・"))}</p><p>部員ID：${esc(context.member.member_no)}</p><p class="status">${membership ? `${fiscalYear()}年度 在籍中` : `${fiscalYear()}年度の在籍登録はありません`}</p>` : "<p>部員名簿に登録されていません。</p>"}</section><section id="requiredActionOverview"></section><div class="section-head"><p class="eyebrow">EVENTS</p><h2>イベント一覧</h2></div><section id="eventSections"></section><div class="section-head"><p class="eyebrow">MY EXHIBITION</p><h2>写真展マイページ</h2></div><section id="exhibitionHub" class="stack"></section><div class="section-head"><p class="eyebrow">EXHIBITION ARCHIVE</p><h2>過去写真展</h2></div><section id="archives" class="stack"></section>`;
+    view.innerHTML = `<aside id="notificationPanel" class="notification-panel hidden" aria-label="通知"><div class="notification-panel-head"><h2>通知</h2><button id="closeNotificationPanel" class="secondary" type="button">閉じる</button></div><div class="notification-tabs" role="tablist"><button type="button" data-notification-tab="actions">対応事項 <span id="notificationActionTabCount"></span></button><button type="button" data-notification-tab="notices">お知らせ <span id="notificationNoticeTabCount"></span></button></div><div id="notificationPanelBody" class="notification-panel-body"></div></aside><div id="notificationBackdrop" class="notification-backdrop hidden"></div><section class="panel member-home-card"><span class="tag">MEMBER</span><h2>${esc(context.member?.name || context.email)}さん</h2>${context.member ? `<p>${esc([context.member.grade, context.member.faculty || context.member.graduate_school, context.member.department || context.member.major].filter(Boolean).join("・"))}</p><p>部員ID：${esc(context.member.member_no)}</p><p class="status">${membership ? `${fiscalYear()}年度 在籍中` : `${fiscalYear()}年度の在籍登録はありません`}</p>` : "<p>部員名簿に登録されていません。</p>"}</section><section id="requiredActionOverview"></section><div class="section-head"><p class="eyebrow">EVENTS</p><h2>イベント一覧</h2></div><section id="eventSections"></section>`;
     const now = new Date(),
       effectiveEnd = (event) => {
         if (event.ends_at) return new Date(event.ends_at);
@@ -614,7 +669,13 @@ async function renderPortal(context, maintenance = null) {
       allEventCards = (events || []).map((event) => { const response = event.event_responses?.find((item) => item.member_id === context.member?.id), entry = exhibitionEntries[event.id], works = (entry?.exhibition_works || []).filter((work) => work.status !== "withdrawn"), state = works.some((work) => work.status === "rejected") ? "要修正の作品があります" : entry?.status === "submitted" ? "出展申込済み" : entry?.status === "draft" ? "出展申込を下書き保存中" : "", waiting = latestWaitlist[event.id]?.status === "waiting", availability = availabilityByEvent[event.id]; return { event,response,state,waiting,full:Boolean(availability?.isFull),availability }; });
     actionRoot.innerHTML = `<div class="section-head"><p class="eyebrow">ACTION REQUIRED</p><h2>対応事項</h2></div><div class="grid">${categories.action.length ? categories.action.map(cardHtml).join("") : '<div class="panel muted">現在必要な対応はありません。</div>'}</div>`;
     const genreTabs = [["meeting","全体会"],["camp","合宿"],["exhibition","写真展"]];
-    sectionRoot.innerHTML = `<div class="portal-event-tabs" role="tablist">${genreTabs.map(([value,label],index)=>`<button type="button" data-portal-genre="${value}" class="${index===0?"is-active":""}">${label}</button>`).join("")}</div>${genreTabs.map(([value,label],index)=>`<div class="portal-event-pane${index===0?"":" hidden"}" data-portal-event-pane="${value}"><div class="grid">${allEventCards.filter((item)=>item.event.genre===value).length?allEventCards.filter((item)=>item.event.genre===value).map(cardHtml).join(""):`<div class="panel muted">表示できる${label}はありません。</div>`}</div></div>`).join("")}`;
+    const eventCardsForGenre = (genre) => {
+      const cards = allEventCards.filter((item) => item.event.genre === genre);
+      if (genre !== "meeting") return cards;
+      const upcoming = cards.filter((item) => new Date(item.event.starts_at) >= now).sort((a, b) => new Date(a.event.starts_at) - new Date(b.event.starts_at));
+      return [...upcoming, ...cards.filter((item) => new Date(item.event.starts_at) < now)];
+    };
+    sectionRoot.innerHTML = `<div class="portal-event-tabs" role="tablist">${genreTabs.map(([value,label],index)=>`<button type="button" data-portal-genre="${value}" class="${index===0?"is-active":""}">${label}</button>`).join("")}</div>${genreTabs.map(([value,label],index)=>{const cards=eventCardsForGenre(value);return `<div class="portal-event-pane${index===0?"":" hidden"}" data-portal-event-pane="${value}">${value==="exhibition"?'<div class="portal-exhibition-guide"><p>各写真展を選ぶと、申込・作品・キャプション・シフトを確認できます。</p><a class="button secondary" href="#/mypage">過去の出展作品を見る</a></div>':""}<div class="grid">${cards.length?cards.map(cardHtml).join(""):`<div class="panel muted">表示できる${label}はありません。</div>`}</div></div>`;}).join("")}`;
     sectionRoot.querySelectorAll("[data-portal-genre]").forEach((button)=>button.onclick=()=>{sectionRoot.querySelectorAll("[data-portal-genre]").forEach((item)=>item.classList.toggle("is-active",item===button));sectionRoot.querySelectorAll("[data-portal-event-pane]").forEach((pane)=>pane.classList.toggle("hidden",pane.dataset.portalEventPane!==button.dataset.portalGenre));});
     const quickRespond = async (eventId, attendance) => {
       const target = (events || []).find((item) => item.id === eventId);
@@ -664,8 +725,6 @@ async function renderPortal(context, maintenance = null) {
         smartphoneWorkId: link.dataset.smartphoneWorkId,
       };
     }));
-    await renderExhibitionHub();
-    await renderArchives(context.member?.id);
   } catch (error) {
     failure(error);
   }
@@ -742,18 +801,23 @@ function myPageEventCard(item, label) {
   return `<a class="my-page-event" href="#/event/${item.id}"><span class="tag">${esc(label || eventLabel(item))}</span><strong>${esc(item.title)}</strong><span>${fmt(item.starts_at)}${item.place ? `・${esc(item.place)}` : ""}</span></a>`;
 }
 
-function renderMyPageCalendar(events) {
-  const base = events.length ? new Date(events[0].starts_at) : new Date(), year = base.getFullYear(), month = base.getMonth(),
-    first = new Date(year, month, 1), lastDay = new Date(year, month + 1, 0).getDate(), leading = first.getDay(), cells = [];
+function jstCalendarParts(value = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tokyo", year: "numeric", month: "numeric", day: "numeric" }).formatToParts(value),
+    get = (type) => Number(parts.find((part) => part.type === type)?.value);
+  return { year: get("year"), month: get("month") - 1, day: get("day") };
+}
+
+function renderMyPageCalendar(events, year, month) {
+  const first = new Date(year, month, 1), lastDay = new Date(year, month + 1, 0).getDate(), leading = first.getDay(), cells = [];
   for (let index = 0; index < 42; index += 1) {
     const day = index - leading + 1;
     if (day < 1 || day > lastDay) cells.push('<div class="my-page-calendar-day is-empty"></div>');
     else {
-      const items = events.filter((event) => { const date = new Date(event.starts_at); return date.getFullYear() === year && date.getMonth() === month && date.getDate() === day; });
+      const items = events.filter((event) => { const date = jstCalendarParts(new Date(event.starts_at)); return date.year === year && date.month === month && date.day === day; });
       cells.push(`<div class="my-page-calendar-day"><span>${day}</span>${items.map((event) => `<a href="#/event/${event.id}" title="${esc(event.title)}">${esc(event.title)}</a>`).join("")}</div>`);
     }
   }
-  return `<div class="my-page-calendar"><div class="my-page-calendar-title"><strong>${year}年${month + 1}月</strong><span>参加予定</span></div><div class="my-page-calendar-week"><b>日</b><b>月</b><b>火</b><b>水</b><b>木</b><b>金</b><b>土</b></div><div class="my-page-calendar-grid">${cells.join("")}</div></div>`;
+  return `<div class="my-page-calendar"><div class="my-page-calendar-title"><strong>${year}年${month + 1}月</strong><div class="my-page-calendar-actions"><button type="button" class="secondary" data-calendar-move="-1">前月</button><button type="button" class="secondary" data-calendar-today>Today</button><button type="button" class="secondary" data-calendar-move="1">次月</button></div></div><div class="my-page-calendar-week"><b>日</b><b>月</b><b>火</b><b>水</b><b>木</b><b>金</b><b>土</b></div><div class="my-page-calendar-grid">${cells.join("")}</div></div>`;
 }
 
 async function renderWorkflowV2History() {
@@ -794,7 +858,18 @@ async function renderMyPage(context, maintenance = null) {
       unanswered = (events || []).filter((event) => event.genre !== "exhibition" && event.status === "saved" && event.published && endTime(event) >= now && !responseFor(event)),
       past = (events || []).filter((event) => participated(event) && endTime(event) < now).sort((a,b) => endTime(b)-endTime(a)),
       memberships = [...(member.membership_years || [])].sort((a,b) => Number(b.fiscal_year)-Number(a.fiscal_year));
-    view.innerHTML = `<section class="panel my-page-profile"><div class="entry-heading"><div><span class="tag">PROFILE</span><h2>${esc(member.name)}</h2></div><span class="status">${memberships.some((item) => item.fiscal_year === fiscalYear() && item.active) ? "在籍中" : "現在年度の在籍なし"}</span></div><dl><dt>部員ID</dt><dd>${esc(member.member_no)}</dd><dt>メール</dt><dd>${esc(member.email)}</dd><dt>所属</dt><dd>${esc([member.grade,member.faculty || member.graduate_school,member.department || member.major].filter(Boolean).join("・") || "未登録")}</dd><dt>LINE名</dt><dd>${esc(member.line_name || "未登録")}</dd><dt>役職</dt><dd>${esc(context.admin?.role_name || "一般部員")}</dd></dl><h3>在籍履歴</h3><div class="summary-strip">${memberships.length ? memberships.map((item) => `<span>${item.fiscal_year}年度 ${item.active ? "在籍" : "非在籍"}</span>`).join("") : '<span>履歴なし</span>'}</div><p class="muted">登録情報の変更は、既存の名簿管理手順により幹部へ連絡してください。</p></section><section class="my-page-events"><div class="section-head"><p class="eyebrow">EVENTS</p><h2>イベント</h2></div><div class="my-page-event-layout"><section class="panel"><h3>参加予定</h3><div class="stack">${upcoming.length ? upcoming.map((event) => myPageEventCard(event)).join("") : '<p class="muted">参加予定はありません。</p>'}</div></section><section class="panel"><h3>出欠未回答</h3><div class="stack">${unanswered.length ? unanswered.map((event) => myPageEventCard(event,"回答が必要")).join("") : '<p class="muted">未回答の予定はありません。</p>'}</div></section></div><section class="panel">${renderMyPageCalendar(upcoming)}</section><section class="panel"><h3>過去に参加したイベント</h3><div class="stack">${past.length ? past.map((event) => myPageEventCard(event)).join("") : '<p class="muted">参加履歴はありません。</p>'}</div></section></section><div class="section-head"><p class="eyebrow">EXHIBITION HISTORY</p><h2>過去の出展作品</h2></div><section id="workflowV2History" class="stack"><p class="muted">Workflow v2履歴を読み込んでいます…</p></section><section id="archives" class="stack"><p class="muted">Legacy履歴を読み込んでいます…</p></section>`;
+    const currentMonth = jstCalendarParts();
+    view.innerHTML = `<section class="panel my-page-profile"><div class="entry-heading"><div><span class="tag">PROFILE</span><h2>${esc(member.name)}</h2></div><span class="status">${memberships.some((item) => item.fiscal_year === fiscalYear() && item.active) ? "在籍中" : "現在年度の在籍なし"}</span></div><dl><dt>部員ID</dt><dd>${esc(member.member_no)}</dd><dt>メール</dt><dd>${esc(member.email)}</dd><dt>所属</dt><dd>${esc([member.grade,member.faculty || member.graduate_school,member.department || member.major].filter(Boolean).join("・") || "未登録")}</dd><dt>LINE名</dt><dd>${esc(member.line_name || "未登録")}</dd><dt>役職</dt><dd>${esc(context.admin?.role_name || "一般部員")}</dd></dl><h3>在籍履歴</h3><div class="summary-strip">${memberships.length ? memberships.map((item) => `<span>${item.fiscal_year}年度 ${item.active ? "在籍" : "非在籍"}</span>`).join("") : '<span>履歴なし</span>'}</div><p class="muted">登録情報の変更は、既存の名簿管理手順により幹部へ連絡してください。</p></section><section class="my-page-events"><div class="section-head"><p class="eyebrow">EVENTS</p><h2>イベント</h2></div><div class="my-page-event-layout"><section class="panel"><h3>参加予定</h3><div class="stack">${upcoming.length ? upcoming.map((event) => myPageEventCard(event)).join("") : '<p class="muted">参加予定はありません。</p>'}</div></section><section class="panel"><h3>出欠未回答</h3><div class="stack">${unanswered.length ? unanswered.map((event) => myPageEventCard(event,"回答が必要")).join("") : '<p class="muted">未回答の予定はありません。</p>'}</div></section></div><section id="myPageCalendarPanel" class="panel"></section><section class="panel"><h3>過去に参加したイベント</h3><div class="stack">${past.length ? past.map((event) => myPageEventCard(event)).join("") : '<p class="muted">参加履歴はありません。</p>'}</div></section></section><div class="section-head"><p class="eyebrow">EXHIBITION HISTORY</p><h2>過去の出展作品</h2></div><section id="workflowV2History" class="stack"><p class="muted">Workflow v2履歴を読み込んでいます…</p></section><section id="archives" class="stack"><p class="muted">Legacy履歴を読み込んでいます…</p></section>`;
+    const calendarState = { year: currentMonth.year, month: currentMonth.month }, calendarRoot = view.querySelector("#myPageCalendarPanel");
+    const renderCalendar = () => {
+      calendarRoot.innerHTML = renderMyPageCalendar(upcoming, calendarState.year, calendarState.month);
+      calendarRoot.querySelectorAll("[data-calendar-move]").forEach((button) => button.onclick = () => {
+        const target = new Date(calendarState.year, calendarState.month + Number(button.dataset.calendarMove), 1);
+        calendarState.year = target.getFullYear(); calendarState.month = target.getMonth(); renderCalendar();
+      });
+      calendarRoot.querySelector("[data-calendar-today]").onclick = () => { const today = jstCalendarParts(); calendarState.year = today.year; calendarState.month = today.month; renderCalendar(); };
+    };
+    renderCalendar();
     await Promise.all([renderWorkflowV2History(), renderArchives(member.id)]);
   } catch (error) {
     failure(error);
@@ -1215,6 +1290,7 @@ async function renderExhibitionApplicationV2(event, context) {
     await renderExhibitionMemberProgress(event, entry);
     await renderExhibitionShiftMember(event);
     setupExhibitionMyPageNavigation();
+    if (active) setupExhibitionCategoryNavigation(Boolean(event.smartphone_exhibition_enabled));
     requestAnimationFrame(() => requestAnimationFrame(focusPendingExhibitionAction));
   } catch (error) {
     failure(error);
