@@ -516,7 +516,7 @@ async function renderPortal(context, maintenance = null) {
         );
     document.querySelector(".header-actions").insertAdjacentHTML(
       "afterbegin",
-      '<a class="button secondary portal-mypage-link" href="#/mypage">マイページ</a><button id="notificationBell" class="notification-bell secondary" type="button" aria-expanded="false" aria-controls="notificationPanel" aria-label="通知を開く">🔔<span id="notificationUnreadBadge" class="notification-badge hidden"></span><span id="notificationActionBadge" class="notification-action-count hidden"></span></button>',
+      '<span class="portal-header-icons"><button id="notificationBell" class="notification-bell secondary" type="button" aria-expanded="false" aria-controls="notificationPanel" aria-label="通知を開く">🔔<span id="notificationUnreadBadge" class="notification-badge hidden"></span><span id="notificationActionBadge" class="notification-action-count hidden"></span></button><a class="button secondary portal-user-link" href="#/mypage" aria-label="マイページを開く" title="マイページ">👤</a></span>',
     );
     const { data: events, error } = await supabase
       .from("events")
@@ -808,16 +808,31 @@ function jstCalendarParts(value = new Date()) {
 }
 
 function renderMyPageCalendar(events, year, month) {
-  const first = new Date(year, month, 1), lastDay = new Date(year, month + 1, 0).getDate(), leading = first.getDay(), cells = [];
-  for (let index = 0; index < 42; index += 1) {
-    const day = index - leading + 1;
-    if (day < 1 || day > lastDay) cells.push('<div class="my-page-calendar-day is-empty"></div>');
-    else {
-      const items = events.filter((event) => { const date = jstCalendarParts(new Date(event.starts_at)); return date.year === year && date.month === month && date.day === day; });
-      cells.push(`<div class="my-page-calendar-day"><span>${day}</span>${items.map((event) => `<a href="#/event/${event.id}" title="${esc(event.title)}">${esc(event.title)}</a>`).join("")}</div>`);
-    }
+  const first = new Date(year, month, 1), lastDay = new Date(year, month + 1, 0).getDate(), leading = first.getDay(),
+    daySerial = ({ year: targetYear, month: targetMonth, day }) => Math.floor(Date.UTC(targetYear, targetMonth, day) / 86400000),
+    monthFirst = daySerial({ year, month, day: 1 }), monthLast = daySerial({ year, month, day: lastDay }),
+    gridFirst = monthFirst - leading,
+    eventRanges = events.map((event) => {
+      const start = jstCalendarParts(new Date(event.starts_at)), end = jstCalendarParts(new Date(event.ends_at || event.starts_at));
+      return { event, start: daySerial(start), end: Math.max(daySerial(start), daySerial(end)) };
+    }).filter((item) => item.end >= monthFirst && item.start <= monthLast).sort((a, b) => a.start - b.start || b.end - a.end),
+    weeks = [];
+  for (let week = 0; week < 6; week += 1) {
+    const weekFirst = gridFirst + week * 7, weekLast = weekFirst + 6, lanes = [], bands = [];
+    eventRanges.filter((item) => item.end >= weekFirst && item.start <= weekLast).forEach((item) => {
+      const start = Math.max(item.start, weekFirst), end = Math.min(item.end, weekLast), startColumn = start - weekFirst + 1, endColumn = end - weekFirst + 2;
+      let lane = lanes.findIndex((laneEnd) => laneEnd < startColumn);
+      if (lane < 0) lane = lanes.length;
+      lanes[lane] = endColumn - 1;
+      bands.push(`<a class="my-page-calendar-band tone-${Math.abs(String(item.event.id).split("").reduce((sum, character) => sum + character.charCodeAt(0), 0)) % 4}${item.start < weekFirst ? " continues-before" : ""}${item.end > weekLast ? " continues-after" : ""}" href="#/event/${item.event.id}" style="--band-start:${startColumn};--band-end:${endColumn};--band-lane:${lane + 2}" title="${esc(item.event.title)}：${fmt(item.event.starts_at)}${item.event.ends_at ? ` 〜 ${fmt(item.event.ends_at)}` : ""}"><span>${esc(item.event.title)}</span></a>`);
+    });
+    const days = Array.from({ length: 7 }, (_, column) => {
+      const index = week * 7 + column, day = index - leading + 1, inMonth = day >= 1 && day <= lastDay;
+      return `<div class="my-page-calendar-day${inMonth ? "" : " is-empty"}" style="--calendar-column:${column + 1}">${inMonth ? `<span>${day}</span>` : ""}</div>`;
+    }).join("");
+    weeks.push(`<div class="my-page-calendar-week-row" style="--calendar-lanes:${Math.max(lanes.length, 1)}">${days}${bands.join("")}</div>`);
   }
-  return `<div class="my-page-calendar"><div class="my-page-calendar-title"><strong>${year}年${month + 1}月</strong><div class="my-page-calendar-actions"><button type="button" class="secondary" data-calendar-move="-1">前月</button><button type="button" class="secondary" data-calendar-today>Today</button><button type="button" class="secondary" data-calendar-move="1">次月</button></div></div><div class="my-page-calendar-week"><b>日</b><b>月</b><b>火</b><b>水</b><b>木</b><b>金</b><b>土</b></div><div class="my-page-calendar-grid">${cells.join("")}</div></div>`;
+  return `<div class="my-page-calendar"><div class="my-page-calendar-title"><strong>${year}年${month + 1}月</strong><div class="my-page-calendar-actions"><button type="button" class="secondary" data-calendar-move="-1">前月</button><button type="button" class="secondary" data-calendar-today>Today</button><button type="button" class="secondary" data-calendar-move="1">次月</button></div></div><div class="my-page-calendar-week"><b>日</b><b>月</b><b>火</b><b>水</b><b>木</b><b>金</b><b>土</b></div><div class="my-page-calendar-grid">${weeks.join("")}</div></div>`;
 }
 
 async function renderWorkflowV2History() {
@@ -854,7 +869,8 @@ async function renderMyPage(context, maintenance = null) {
     const now = Date.now(), entryByEvent = new Map((entries || []).map((entry) => [entry.event_id, entry])), responseFor = (event) => (event.event_responses || []).find((response) => response.member_id === member.id),
       participated = (event) => event.genre === "exhibition" ? entryByEvent.get(event.id)?.application_state === "active" : responseFor(event)?.attendance === "参加" && !responseFor(event)?.cancelled_at,
       endTime = (event) => new Date(event.ends_at || event.starts_at || 0).getTime(),
-      upcoming = (events || []).filter((event) => participated(event) && endTime(event) >= now),
+      calendarEvents = (events || []).filter(participated),
+      upcoming = calendarEvents.filter((event) => endTime(event) >= now),
       unanswered = (events || []).filter((event) => event.genre !== "exhibition" && event.status === "saved" && event.published && endTime(event) >= now && !responseFor(event)),
       past = (events || []).filter((event) => participated(event) && endTime(event) < now).sort((a,b) => endTime(b)-endTime(a)),
       memberships = [...(member.membership_years || [])].sort((a,b) => Number(b.fiscal_year)-Number(a.fiscal_year));
@@ -862,7 +878,7 @@ async function renderMyPage(context, maintenance = null) {
     view.innerHTML = `<section class="panel my-page-profile"><div class="entry-heading"><div><span class="tag">PROFILE</span><h2>${esc(member.name)}</h2></div><span class="status">${memberships.some((item) => item.fiscal_year === fiscalYear() && item.active) ? "在籍中" : "現在年度の在籍なし"}</span></div><dl><dt>部員ID</dt><dd>${esc(member.member_no)}</dd><dt>メール</dt><dd>${esc(member.email)}</dd><dt>所属</dt><dd>${esc([member.grade,member.faculty || member.graduate_school,member.department || member.major].filter(Boolean).join("・") || "未登録")}</dd><dt>LINE名</dt><dd>${esc(member.line_name || "未登録")}</dd><dt>役職</dt><dd>${esc(context.admin?.role_name || "一般部員")}</dd></dl><h3>在籍履歴</h3><div class="summary-strip">${memberships.length ? memberships.map((item) => `<span>${item.fiscal_year}年度 ${item.active ? "在籍" : "非在籍"}</span>`).join("") : '<span>履歴なし</span>'}</div><p class="muted">登録情報の変更は、既存の名簿管理手順により幹部へ連絡してください。</p></section><section class="my-page-events"><div class="section-head"><p class="eyebrow">EVENTS</p><h2>イベント</h2></div><div class="my-page-event-layout"><section class="panel"><h3>参加予定</h3><div class="stack">${upcoming.length ? upcoming.map((event) => myPageEventCard(event)).join("") : '<p class="muted">参加予定はありません。</p>'}</div></section><section class="panel"><h3>出欠未回答</h3><div class="stack">${unanswered.length ? unanswered.map((event) => myPageEventCard(event,"回答が必要")).join("") : '<p class="muted">未回答の予定はありません。</p>'}</div></section></div><section id="myPageCalendarPanel" class="panel"></section><section class="panel"><h3>過去に参加したイベント</h3><div class="stack">${past.length ? past.map((event) => myPageEventCard(event)).join("") : '<p class="muted">参加履歴はありません。</p>'}</div></section></section><div class="section-head"><p class="eyebrow">EXHIBITION HISTORY</p><h2>過去の出展作品</h2></div><section id="workflowV2History" class="stack"><p class="muted">Workflow v2履歴を読み込んでいます…</p></section><section id="archives" class="stack"><p class="muted">Legacy履歴を読み込んでいます…</p></section>`;
     const calendarState = { year: currentMonth.year, month: currentMonth.month }, calendarRoot = view.querySelector("#myPageCalendarPanel");
     const renderCalendar = () => {
-      calendarRoot.innerHTML = renderMyPageCalendar(upcoming, calendarState.year, calendarState.month);
+      calendarRoot.innerHTML = renderMyPageCalendar(calendarEvents, calendarState.year, calendarState.month);
       calendarRoot.querySelectorAll("[data-calendar-move]").forEach((button) => button.onclick = () => {
         const target = new Date(calendarState.year, calendarState.month + Number(button.dataset.calendarMove), 1);
         calendarState.year = target.getFullYear(); calendarState.month = target.getMonth(); renderCalendar();
