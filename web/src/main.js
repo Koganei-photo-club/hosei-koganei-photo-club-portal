@@ -25,7 +25,19 @@ const esc = (value) => {
   return node.innerHTML;
 };
 const fmt = (value) =>
-  value ? new Date(value).toLocaleString("ja-JP") : "未定";
+  value ? new Date(value).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo" }) : "未定";
+const fmtJst = (value) =>
+  value
+    ? `${new Intl.DateTimeFormat("ja-JP", {
+        timeZone: "Asia/Tokyo",
+        year: "numeric",
+        month: "numeric",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).format(new Date(value))} JST`
+    : "未定";
 const fiscalYear = () => {
   const d = new Date();
   return d.getFullYear() - (d.getMonth() < 3 ? 1 : 0);
@@ -41,7 +53,7 @@ const eventLabel = (e) =>
 const route = () => location.hash.replace(/^#/, "") || "/";
 
 function layout(title = "活動ポータル", actions = "") {
-  app.innerHTML = `<header class="site-header"><div><p class="eyebrow">HOSEI PHOTO CLUB</p><h1 class="site-title">${esc(title)}</h1></div><div class="header-actions">${actions}</div></header><main class="page"><div id="message" class="notice">読み込んでいます…</div><div id="view"></div></main>`;
+  app.innerHTML = `<header class="site-header"><a class="site-brand" href="#/" aria-label="活動ポータルトップへ"><span class="site-logo" aria-hidden="true">H</span><span><span class="eyebrow">HOSEI PHOTO CLUB</span><h1 class="site-title">${esc(title)}</h1></span></a><div class="header-actions">${actions}</div></header><main class="page"><div id="message" class="notice">読み込んでいます…</div><div id="view"></div></main>`;
 }
 function message(text, error = false) {
   const box = document.querySelector("#message");
@@ -394,6 +406,7 @@ async function navigate() {
     startMaintenancePolling(supabase, () => navigate());
     if (path.startsWith("/event/"))
       return renderEvent(path.split("/")[2], context);
+    if (path === "/mypage") return renderMyPage(context, maintenance);
     if (path === "/admin") return renderAdmin(context, maintenance);
     return renderPortal(context, maintenance);
   } catch (error) {
@@ -446,6 +459,10 @@ async function renderPortal(context, maintenance = null) {
           "afterbegin",
           '<a class="button secondary" href="#/maintenance-admin">メンテナンス管理</a>',
         );
+    document.querySelector(".header-actions").insertAdjacentHTML(
+      "afterbegin",
+      '<a class="button secondary portal-mypage-link" href="#/mypage">マイページ</a><button id="notificationBell" class="notification-bell secondary" type="button" aria-expanded="false" aria-controls="notificationPanel" aria-label="通知を開く">🔔<span id="notificationUnreadBadge" class="notification-badge hidden"></span><span id="notificationActionBadge" class="notification-action-count hidden"></span></button>',
+    );
     const { data: events, error } = await supabase
       .from("events")
       .select("*,event_responses(*)")
@@ -468,19 +485,27 @@ async function renderPortal(context, maintenance = null) {
     let exhibitionEntries = {};
     let waitlistEntries = [], waitlistOffers = [], exhibitionActions = [];
     if (context.member) {
-      const [{ data: entries, error: entryError }, { data: waiting, error: waitingError }, { data: offers, error: offersError }, { data: requiredActions, error: requiredActionsError }] = await Promise.all([
+      const [{ data: entries, error: entryError }, { data: waiting, error: waitingError }, { data: offers, error: offersError }, { data: requiredActions, error: requiredActionsError }, { data: rescueActions, error: rescueActionsError }] = await Promise.all([
         supabase.from("exhibition_entries").select("event_id,status,exhibition_works(status,orientation,print_size,publication_consent)").eq("member_id", context.member.id),
         supabase.from("event_waitlist_entries").select("*").eq("member_id", context.member.id).order("created_at", { ascending: false }),
         supabase.from("event_waitlist_offers").select("*").eq("member_id", context.member.id).eq("status", "pending"),
         supabase.rpc("get_my_exhibition_required_actions_v1"),
+        supabase.rpc("get_my_exhibition_draft_rescue_targets_v1", { p_event_id: null }),
       ]);
       if (entryError) throw entryError;
       if (waitingError) throw waitingError;
       if (offersError) throw offersError;
       if (requiredActionsError) throw requiredActionsError;
+      if (rescueActionsError) throw rescueActionsError;
       waitlistEntries = waiting || [];
       waitlistOffers = offers || [];
-      exhibitionActions = requiredActions || [];
+      exhibitionActions = [...(requiredActions || []), ...(rescueActions || []).map((item) => ({
+        action_type: item.required_action_type,event_id:item.event_id,event_title:item.event_title,
+        target_type:item.target_type,target_id:item.target_id,work_id:item.target_type==="regular_work"?item.work_id:null,
+        work_title:item.work_title,smartphone_work_id:item.target_type==="smartphone_work"?item.work_id:null,
+        smartphone_sort_order:item.sort_order,problem_fields:[],reason:item.reason,deadline:item.deadline,
+        section:item.section,priority:5,occurred_at:null,
+      }))];
       exhibitionEntries = Object.fromEntries(
         (entries || []).map((entry) => [entry.event_id, entry]),
       );
@@ -490,7 +515,7 @@ async function renderPortal(context, maintenance = null) {
       membership = context.member?.membership_years?.find(
         (y) => y.fiscal_year === fiscalYear() && y.active,
       );
-    view.innerHTML = `<section class="panel"><span class="tag">MEMBER</span><h2>${esc(context.member?.name || context.email)}さん</h2>${context.member ? `<p>${esc([context.member.grade, context.member.faculty || context.member.graduate_school, context.member.department || context.member.major].filter(Boolean).join("・"))}</p><p>部員ID：${esc(context.member.member_no)}</p><p class="status">${membership ? `${fiscalYear()}年度 在籍中` : `${fiscalYear()}年度の在籍登録はありません`}</p>` : "<p>部員名簿に登録されていません。</p>"}</section><section id="eventSections"></section><div class="section-head"><p class="eyebrow">MY EXHIBITION</p><h2>写真展マイページ</h2></div><section id="exhibitionHub" class="stack"></section><div class="section-head"><p class="eyebrow">EXHIBITION ARCHIVE</p><h2>過去写真展</h2></div><section id="archives" class="stack"></section>`;
+    view.innerHTML = `<aside id="notificationPanel" class="notification-panel hidden" aria-label="通知"><div class="notification-panel-head"><h2>通知</h2><button id="closeNotificationPanel" class="secondary" type="button">閉じる</button></div><div class="notification-tabs" role="tablist"><button type="button" data-notification-tab="actions">対応事項 <span id="notificationActionTabCount"></span></button><button type="button" data-notification-tab="notices">お知らせ <span id="notificationNoticeTabCount"></span></button></div><div id="notificationPanelBody" class="notification-panel-body"></div></aside><div id="notificationBackdrop" class="notification-backdrop hidden"></div><section class="panel member-home-card"><span class="tag">MEMBER</span><h2>${esc(context.member?.name || context.email)}さん</h2>${context.member ? `<p>${esc([context.member.grade, context.member.faculty || context.member.graduate_school, context.member.department || context.member.major].filter(Boolean).join("・"))}</p><p>部員ID：${esc(context.member.member_no)}</p><p class="status">${membership ? `${fiscalYear()}年度 在籍中` : `${fiscalYear()}年度の在籍登録はありません`}</p>` : "<p>部員名簿に登録されていません。</p>"}</section><section id="requiredActionOverview"></section><div class="section-head"><p class="eyebrow">EVENTS</p><h2>イベント一覧</h2></div><section id="eventSections"></section><div class="section-head"><p class="eyebrow">MY EXHIBITION</p><h2>写真展マイページ</h2></div><section id="exhibitionHub" class="stack"></section><div class="section-head"><p class="eyebrow">EXHIBITION ARCHIVE</p><h2>過去写真展</h2></div><section id="archives" class="stack"></section>`;
     const now = new Date(),
       effectiveEnd = (event) => {
         if (event.ends_at) return new Date(event.ends_at);
@@ -540,8 +565,10 @@ async function renderPortal(context, maintenance = null) {
         waiting = latestWaitlist[event.id]?.status === "waiting",
         availability = availabilityByEvent[event.id],
         full = Boolean(availability?.isFull),
-        card = { event, response, state, waiting, full, deadline: offerByEvent[event.id]?.response_deadline || null };
+        unanswered = event.genre !== "exhibition" && !past && !response && Boolean(availability?.registrationOpen),
+        card = { event, response, state, waiting, full, availability, deadline: offerByEvent[event.id]?.response_deadline || event.registration_deadline || null };
       if (actionable) categories.action.push(card);
+      else if (unanswered) categories.action.push({ ...card, responseRequired: true });
       else if (past && joined) categories.past.push(card);
       else if (!past && joined) categories.joined.push(card);
       else if (!past && (event.genre === "exhibition" || !response || waiting || response.cancelled_at)) categories.available.push(card);
@@ -562,6 +589,8 @@ async function renderPortal(context, maintenance = null) {
         caption_stale: "キャプション再確認が必要です",
         smartphone_work_correction: "修正が必要です",
         smartphone_work_reedit: "再編集・再提出が必要です",
+        regular_work_rescue_required: "期限後の再登録が必要です",
+        smartphone_work_rescue_required: "期限後の再登録が必要です",
       },
       problemLabels = {
         original: "原画像", title: "作品タイトル", orientation: "向き", print_size: "プリントサイズ",
@@ -580,19 +609,54 @@ async function renderPortal(context, maintenance = null) {
       },
       cardHtml = ({ event, response, state, waiting, full, exhibitionAction }) => exhibitionAction
         ? exhibitionActionCardHtml(exhibitionAction)
-        : `<a class="card" href="#/event/${event.id}"><div><span class="tag">${eventLabel(event)}</span><h3>${esc(event.title)}</h3><p>${fmt(event.starts_at)}・${esc(event.place)}</p>${full ? '<p class="capacity-warning">定員に達しました</p>' : ""}${waiting ? '<p class="status">キャンセル待ち登録済み</p>' : event.genre === "exhibition" && state ? `<p class="status">${state}</p>` : response ? `<p class="status">${response.cancelled_at ? "キャンセル済み・再参加可能" : `回答済み：${esc(response.attendance)}`}</p>` : ""}</div><strong>→</strong></a>`;
-    const sectionRoot = document.querySelector("#eventSections"), sections = [
-      ["action", "ACTION REQUIRED", "回答が必要です"], ["joined", "JOINED EVENTS", "参加申込済みのイベント"], ["available", "AVAILABLE EVENTS", "参加可能なイベント"], ["past", "PAST EVENTS", "過去に参加したイベント"],
-    ];
-    sections.forEach(([key, eyebrow, title]) => {
-      const items = categories[key];
-      sectionRoot.insertAdjacentHTML("beforeend", `<div class="section-head"><p class="eyebrow">${eyebrow}</p><h2>${title}</h2></div><section class="grid" data-category="${key}">${items.length ? items.map((item, index) => `<div class="event-card-wrap${index >= 2 ? ` hidden category-extra category-extra-${key}` : ""}">${cardHtml(item)}</div>`).join("") : `<div class="panel muted">${key === "available" ? "現在参加できる活動はありません。" : "該当する予定はありません。"}</div>`}</section>${items.length > 2 ? `<div class="actions"><button class="secondary toggle-category" data-target="${key}">もっと見る</button></div>` : ""}`);
+        : `<article class="card event-card" data-event-id="${event.id}"><a class="event-card-main" href="#/event/${event.id}"><div><span class="tag">${eventLabel(event)}</span><h3>${esc(event.title)}</h3><p>${fmt(event.starts_at)}・${esc(event.place)}</p>${full ? '<p class="capacity-warning">定員に達しました</p>' : ""}${waiting ? '<p class="status">キャンセル待ち登録済み</p>' : event.genre === "exhibition" && state ? `<p class="status">${state}</p>` : response ? `<p class="status">${response.cancelled_at ? "キャンセル済み・再参加可能" : `回答済み：${esc(response.attendance)}`}</p>` : '<p class="status">未回答</p>'}</div><strong>→</strong></a>${event.genre !== "exhibition" && !response && new Date() < new Date(event.registration_deadline) ? `<div class="quick-response-actions"><button class="quick-attend" type="button">${event.genre === "camp" || event.subtype === "dining" ? "参加内容を入力" : "参加する"}</button><button class="quick-decline secondary" type="button">不参加</button></div>` : ""}</article>`;
+    const actionRoot = document.querySelector("#requiredActionOverview"), sectionRoot = document.querySelector("#eventSections"),
+      allEventCards = (events || []).map((event) => { const response = event.event_responses?.find((item) => item.member_id === context.member?.id), entry = exhibitionEntries[event.id], works = (entry?.exhibition_works || []).filter((work) => work.status !== "withdrawn"), state = works.some((work) => work.status === "rejected") ? "要修正の作品があります" : entry?.status === "submitted" ? "出展申込済み" : entry?.status === "draft" ? "出展申込を下書き保存中" : "", waiting = latestWaitlist[event.id]?.status === "waiting", availability = availabilityByEvent[event.id]; return { event,response,state,waiting,full:Boolean(availability?.isFull),availability }; });
+    actionRoot.innerHTML = `<div class="section-head"><p class="eyebrow">ACTION REQUIRED</p><h2>対応事項</h2></div><div class="grid">${categories.action.length ? categories.action.map(cardHtml).join("") : '<div class="panel muted">現在必要な対応はありません。</div>'}</div>`;
+    const genreTabs = [["meeting","全体会"],["camp","合宿"],["exhibition","写真展"]];
+    sectionRoot.innerHTML = `<div class="portal-event-tabs" role="tablist">${genreTabs.map(([value,label],index)=>`<button type="button" data-portal-genre="${value}" class="${index===0?"is-active":""}">${label}</button>`).join("")}</div>${genreTabs.map(([value,label],index)=>`<div class="portal-event-pane${index===0?"":" hidden"}" data-portal-event-pane="${value}"><div class="grid">${allEventCards.filter((item)=>item.event.genre===value).length?allEventCards.filter((item)=>item.event.genre===value).map(cardHtml).join(""):`<div class="panel muted">表示できる${label}はありません。</div>`}</div></div>`).join("")}`;
+    sectionRoot.querySelectorAll("[data-portal-genre]").forEach((button)=>button.onclick=()=>{sectionRoot.querySelectorAll("[data-portal-genre]").forEach((item)=>item.classList.toggle("is-active",item===button));sectionRoot.querySelectorAll("[data-portal-event-pane]").forEach((pane)=>pane.classList.toggle("hidden",pane.dataset.portalEventPane!==button.dataset.portalGenre));});
+    const quickRespond = async (eventId, attendance) => {
+      const target = (events || []).find((item) => item.id === eventId);
+      if (!target || !context.member) return;
+      if (attendance === "参加" && (target.genre === "camp" || target.subtype === "dining" || !context.member.line_name)) {
+        location.hash = `#/event/${eventId}`;
+        return;
+      }
+      if (!confirm(`「${target.title}」へ「${attendance}」で回答しますか？`)) return;
+      const { error } = await supabase.rpc("submit_event_response", {
+        p_event_id: eventId,p_attendance:attendance,p_line_name:context.member.line_name || context.member.name,
+        p_camera:false,p_disposable_camera:false,p_allergies:"",p_other_allergy:"",p_note:"",p_agreement:false,
+      });
+      if (error) return failure(error);
+      await renderPortal(context, maintenance);
+      message(`「${target.title}」へ${attendance}で回答しました。`);
+    };
+    document.querySelectorAll(".event-card").forEach((card)=>{
+      card.querySelector(".quick-attend")?.addEventListener("click",()=>quickRespond(card.dataset.eventId,"参加"));
+      card.querySelector(".quick-decline")?.addEventListener("click",()=>quickRespond(card.dataset.eventId,"不参加"));
     });
-    document.querySelectorAll(".toggle-category").forEach((button) => button.onclick = () => {
-      const extras = document.querySelectorAll(`.category-extra-${button.dataset.target}`), expanding = [...extras].some((item) => item.classList.contains("hidden"));
-      extras.forEach((item) => item.classList.toggle("hidden", !expanding));
-      button.textContent = expanding ? "表示数を減らす" : "もっと見る";
-    });
+    const noticeItems = [...(events || [])].sort((a,b)=>new Date(b.updated_at||b.created_at||0)-new Date(a.updated_at||a.created_at||0)),
+      readStorageKey = `hosei-portal-notice-read:${session?.user?.id || context.email}`,
+      readNotices = new Set((()=>{try{const stored=JSON.parse(localStorage.getItem(readStorageKey)||"[]");return Array.isArray(stored)?stored:[];}catch{return [];}})()),
+      noticeKey = (event) => `${event.id}:${event.updated_at || event.created_at || event.starts_at}`,
+      unreadNotices = () => noticeItems.filter((event)=>!readNotices.has(noticeKey(event))),
+      panel = document.querySelector("#notificationPanel"), backdrop = document.querySelector("#notificationBackdrop"), panelBody = document.querySelector("#notificationPanelBody"), bell = document.querySelector("#notificationBell"),
+      unreadBadge = document.querySelector("#notificationUnreadBadge"), actionBadge = document.querySelector("#notificationActionBadge");
+    let selectedNotificationTab = categories.action.length ? "actions" : "notices";
+    const updateNotificationBadges = () => { const unread = unreadNotices().length; unreadBadge.textContent=String(unread);unreadBadge.classList.toggle("hidden",!unread);actionBadge.textContent=String(categories.action.length);actionBadge.classList.toggle("hidden",!categories.action.length);document.querySelector("#notificationActionTabCount").textContent=`(${categories.action.length})`;document.querySelector("#notificationNoticeTabCount").textContent=`(${unread})`; };
+    const renderNotificationTab = () => {
+      panel.querySelectorAll("[data-notification-tab]").forEach((button)=>button.classList.toggle("is-active",button.dataset.notificationTab===selectedNotificationTab));
+      if(selectedNotificationTab==="actions") panelBody.innerHTML=categories.action.length?categories.action.map(cardHtml).join(""):'<p class="muted">現在必要な対応はありません。</p>';
+      else panelBody.innerHTML=noticeItems.length?noticeItems.map((event)=>`<a class="notification-notice${readNotices.has(noticeKey(event))?" is-read":""}" href="#/event/${event.id}" data-notice-key="${esc(noticeKey(event))}"><span class="tag">${eventLabel(event)}</span><strong>${esc(event.title)}</strong><span>${fmt(event.starts_at)}・${esc(event.place)}</span></a>`).join(""):'<p class="muted">お知らせはありません。</p>';
+      panelBody.querySelectorAll("[data-notice-key]").forEach((link)=>link.addEventListener("click",()=>{readNotices.add(link.dataset.noticeKey);localStorage.setItem(readStorageKey,JSON.stringify([...readNotices]));updateNotificationBadges();}));
+      panelBody.querySelectorAll("[data-required-action]").forEach((link)=>link.addEventListener("click",()=>{pendingExhibitionActionTarget={section:link.dataset.section,workId:link.dataset.workId,smartphoneWorkId:link.dataset.smartphoneWorkId};}));
+    };
+    const closeNotificationPanel = () => { panel.classList.add("hidden");backdrop.classList.add("hidden");bell.setAttribute("aria-expanded","false"); };
+    bell.onclick=()=>{const opening=panel.classList.contains("hidden");if(opening){renderNotificationTab();panel.classList.remove("hidden");backdrop.classList.remove("hidden");bell.setAttribute("aria-expanded","true");}else closeNotificationPanel();};
+    document.querySelector("#closeNotificationPanel").onclick=closeNotificationPanel;backdrop.onclick=closeNotificationPanel;
+    panel.querySelectorAll("[data-notification-tab]").forEach((button)=>button.onclick=()=>{selectedNotificationTab=button.dataset.notificationTab;renderNotificationTab();});
+    updateNotificationBadges();
     document.querySelectorAll("[data-required-action]").forEach((link) => link.addEventListener("click", () => {
       pendingExhibitionActionTarget = {
         section: link.dataset.section,
@@ -672,6 +736,69 @@ async function renderArchives(memberId) {
       target.oncontextmenu = (event) => event.preventDefault();
     },
   );
+}
+
+function myPageEventCard(item, label) {
+  return `<a class="my-page-event" href="#/event/${item.id}"><span class="tag">${esc(label || eventLabel(item))}</span><strong>${esc(item.title)}</strong><span>${fmt(item.starts_at)}${item.place ? `・${esc(item.place)}` : ""}</span></a>`;
+}
+
+function renderMyPageCalendar(events) {
+  const base = events.length ? new Date(events[0].starts_at) : new Date(), year = base.getFullYear(), month = base.getMonth(),
+    first = new Date(year, month, 1), lastDay = new Date(year, month + 1, 0).getDate(), leading = first.getDay(), cells = [];
+  for (let index = 0; index < 42; index += 1) {
+    const day = index - leading + 1;
+    if (day < 1 || day > lastDay) cells.push('<div class="my-page-calendar-day is-empty"></div>');
+    else {
+      const items = events.filter((event) => { const date = new Date(event.starts_at); return date.getFullYear() === year && date.getMonth() === month && date.getDate() === day; });
+      cells.push(`<div class="my-page-calendar-day"><span>${day}</span>${items.map((event) => `<a href="#/event/${event.id}" title="${esc(event.title)}">${esc(event.title)}</a>`).join("")}</div>`);
+    }
+  }
+  return `<div class="my-page-calendar"><div class="my-page-calendar-title"><strong>${year}年${month + 1}月</strong><span>参加予定</span></div><div class="my-page-calendar-week"><b>日</b><b>月</b><b>火</b><b>水</b><b>木</b><b>金</b><b>土</b></div><div class="my-page-calendar-grid">${cells.join("")}</div></div>`;
+}
+
+async function renderWorkflowV2History() {
+  const root = document.querySelector("#workflowV2History");
+  if (!root) return;
+  const { data, error } = await supabase.rpc("get_my_exhibition_history_v1");
+  if (error) {
+    root.innerHTML = `<div class="notice error">Workflow v2の出展履歴を読み込めませんでした：${esc(error.message)}</div>`;
+    return;
+  }
+  const regular = data?.regularWorks || [], smartphone = data?.smartphoneGroups || [];
+  root.innerHTML = `<section><h3>通常作品</h3><div class="grid archive-work-grid">${regular.length ? regular.map((work) => `<article class="archive-work-card panel"><div class="archive-work-image${work.imagePath ? "" : " is-empty"}" ${work.imagePath ? `data-history-bucket="${esc(work.imageBucket)}" data-history-path="${esc(work.imagePath)}"` : ""}><span class="muted">${work.imagePath ? "作品画像を読み込んでいます…" : "画像はありません"}</span></div><div class="archive-work-info"><p class="tag">${esc(work.eventTitle)}／No.${esc(work.displayNo)}</p><h3>${esc(work.title)}</h3><p class="archive-work-votes"><strong>${work.voteCount}票</strong>・${work.favoriteRate}%</p><details><summary>キャプション</summary><p>${esc(work.caption || "キャプションなし")}</p><p class="muted">${esc([work.camera,work.lens,work.film].filter(Boolean).join("／"))}</p></details><details><summary>寄せられた感想（${work.comments.length}件）</summary><ul>${work.comments.map((comment) => `<li>${esc(comment)}</li>`).join("") || '<li class="muted">感想はありません。</li>'}</ul></details></div></article>`).join("") : '<div class="panel muted">Workflow v2で確定した通常作品履歴はありません。</div>'}</div></section><section class="smartphone-history"><h3>スマートフォン共同展示</h3><p class="muted">共同展示への参加履歴です。共同展示全体の投票・感想は、個人作品の実績として表示しません。</p><div class="grid">${smartphone.length ? smartphone.map((item) => `<article class="panel"><span class="tag">共同展示／No.${esc(item.displayNo)}</span><h3>${esc(item.displayName)}</h3><p>${esc(item.eventTitle)}</p><p>集合展示 ${item.workCount}作品</p></article>`).join("") : '<div class="panel muted">スマートフォン共同展示の参加履歴はありません。</div>'}</div></section>`;
+  root.querySelectorAll("[data-history-path]").forEach(async (target) => {
+    const { data: signed, error: signedError } = await supabase.storage.from(target.dataset.historyBucket).createSignedUrl(target.dataset.historyPath, 900);
+    target.innerHTML = signedError ? '<span class="muted">画像を表示できませんでした。</span>' : `<img src="${esc(signed.signedUrl)}" alt="本人の出展作品" draggable="false">`;
+  });
+}
+
+async function renderMyPage(context, maintenance = null) {
+  layout("マイページ", '<a class="button secondary" href="#/">ポータルトップ</a><button id="logout" class="secondary">ログアウト</button>');
+  document.querySelector("#logout").onclick = () => supabase.auth.signOut();
+  try {
+    hideMessage();
+    const view = document.querySelector("#view"), member = context.member;
+    if (!member) {
+      view.innerHTML = '<section class="panel">部員名簿に登録されるとマイページを利用できます。</section>';
+      return;
+    }
+    const [{ data: events, error: eventError }, { data: entries, error: entryError }] = await Promise.all([
+      supabase.from("events").select("*,event_responses(*)").is("deleted_at", null).order("starts_at"),
+      supabase.from("exhibition_entries").select("event_id,application_state").eq("member_id", member.id),
+    ]);
+    if (eventError || entryError) throw eventError || entryError;
+    const now = Date.now(), entryByEvent = new Map((entries || []).map((entry) => [entry.event_id, entry])), responseFor = (event) => (event.event_responses || []).find((response) => response.member_id === member.id),
+      participated = (event) => event.genre === "exhibition" ? entryByEvent.get(event.id)?.application_state === "active" : responseFor(event)?.attendance === "参加" && !responseFor(event)?.cancelled_at,
+      endTime = (event) => new Date(event.ends_at || event.starts_at || 0).getTime(),
+      upcoming = (events || []).filter((event) => participated(event) && endTime(event) >= now),
+      unanswered = (events || []).filter((event) => event.genre !== "exhibition" && event.status === "saved" && event.published && endTime(event) >= now && !responseFor(event)),
+      past = (events || []).filter((event) => participated(event) && endTime(event) < now).sort((a,b) => endTime(b)-endTime(a)),
+      memberships = [...(member.membership_years || [])].sort((a,b) => Number(b.fiscal_year)-Number(a.fiscal_year));
+    view.innerHTML = `<section class="panel my-page-profile"><div class="entry-heading"><div><span class="tag">PROFILE</span><h2>${esc(member.name)}</h2></div><span class="status">${memberships.some((item) => item.fiscal_year === fiscalYear() && item.active) ? "在籍中" : "現在年度の在籍なし"}</span></div><dl><dt>部員ID</dt><dd>${esc(member.member_no)}</dd><dt>メール</dt><dd>${esc(member.email)}</dd><dt>所属</dt><dd>${esc([member.grade,member.faculty || member.graduate_school,member.department || member.major].filter(Boolean).join("・") || "未登録")}</dd><dt>LINE名</dt><dd>${esc(member.line_name || "未登録")}</dd><dt>役職</dt><dd>${esc(context.admin?.role_name || "一般部員")}</dd></dl><h3>在籍履歴</h3><div class="summary-strip">${memberships.length ? memberships.map((item) => `<span>${item.fiscal_year}年度 ${item.active ? "在籍" : "非在籍"}</span>`).join("") : '<span>履歴なし</span>'}</div><p class="muted">登録情報の変更は、既存の名簿管理手順により幹部へ連絡してください。</p></section><section class="my-page-events"><div class="section-head"><p class="eyebrow">EVENTS</p><h2>イベント</h2></div><div class="my-page-event-layout"><section class="panel"><h3>参加予定</h3><div class="stack">${upcoming.length ? upcoming.map((event) => myPageEventCard(event)).join("") : '<p class="muted">参加予定はありません。</p>'}</div></section><section class="panel"><h3>出欠未回答</h3><div class="stack">${unanswered.length ? unanswered.map((event) => myPageEventCard(event,"回答が必要")).join("") : '<p class="muted">未回答の予定はありません。</p>'}</div></section></div><section class="panel">${renderMyPageCalendar(upcoming)}</section><section class="panel"><h3>過去に参加したイベント</h3><div class="stack">${past.length ? past.map((event) => myPageEventCard(event)).join("") : '<p class="muted">参加履歴はありません。</p>'}</div></section></section><div class="section-head"><p class="eyebrow">EXHIBITION HISTORY</p><h2>過去の出展作品</h2></div><section id="workflowV2History" class="stack"><p class="muted">Workflow v2履歴を読み込んでいます…</p></section><section id="archives" class="stack"><p class="muted">Legacy履歴を読み込んでいます…</p></section>`;
+    await Promise.all([renderWorkflowV2History(), renderArchives(member.id)]);
+  } catch (error) {
+    failure(error);
+  }
 }
 
 const exhibitionWorkStatus = (value) =>
@@ -813,6 +940,65 @@ async function createWatermarkedPublicImage(previewPath) {
   return blob;
 }
 
+const exhibitionProgressPill = (label, state, attention = false) =>
+  `<span class="exhibition-progress-pill ${state}${attention ? " needs-action" : ""}">${attention ? '<b aria-label="対応が必要">!</b>' : ""}${esc(label)}</span>`;
+
+async function renderExhibitionMemberProgress(event, entry) {
+  const root = document.querySelector("#exhibitionProgress");
+  if (!root) return;
+  const regularResult = entry
+      ? await supabase.from("exhibition_works").select("id,sort_order,workflow_state,replacement_for_work_id").eq("entry_id", entry.id).order("sort_order")
+      : { data: [], error: null },
+    smartphoneResult = entry && event.smartphone_exhibition_enabled
+      ? await supabase.from("exhibition_smartphone_works").select("id,sort_order,workflow_state").eq("entry_id", entry.id).order("sort_order")
+      : { data: [], error: null },
+    rescueResult = entry
+      ? await supabase.rpc("get_my_exhibition_draft_rescue_targets_v1", { p_event_id: event.id })
+      : { data: [], error: null };
+  if (regularResult.error || smartphoneResult.error || rescueResult.error) {
+    root.innerHTML = `<div class="notice error">${esc((regularResult.error || smartphoneResult.error || rescueResult.error).message)}</div>`;
+    return;
+  }
+  const regular = regularResult.data || [], smartphone = smartphoneResult.data || [], regularIds = regular.map((work) => work.id),
+    captionResult = regularIds.length
+      ? await supabase.from("exhibition_caption_working_data").select("work_id,state").in("work_id", regularIds)
+      : { data: [], error: null };
+  if (captionResult.error) {
+    root.innerHTML = `<div class="notice error">${esc(captionResult.error.message)}</div>`;
+    return;
+  }
+  const captions = new Map((captionResult.data || []).map((caption) => [caption.work_id, caption.state])),
+    rescueIds = new Set((rescueResult.data || []).map((target) => target.work_id));
+  const stateInfo = (state) => {
+    if (state === "accepted") return { label: "確認済み", kind: "complete", attention: false };
+    if (state === "submitted") return { label: "確認待ち", kind: "current", attention: false };
+    if (["rejected", "needs_revision"].includes(state)) return { label: "修正待ち", kind: "current", attention: true };
+    if (["reedit_pending", "reedit_editing"].includes(state)) return { label: "再編集", kind: "current", attention: true };
+    if (state === "withdrawn") return { label: "取り下げ済み", kind: "not-started", attention: false };
+    if (state === "draft") return { label: "下書き・未登録", kind: "not-started", attention: true };
+    return { label: "下書き・未登録", kind: "not-started", attention: false };
+  };
+  const captionInfo = (state) => {
+    if (state === "accepted") return { label: "キャプション確認済み", kind: "complete", attention: false };
+    if (state === "submitted") return { label: "キャプション確認待ち", kind: "current", attention: false };
+    if (["rejected", "stale", "reedit_pending", "reedit_editing"].includes(state)) return { label: "キャプション対応必要", kind: "current", attention: true };
+    return { label: "キャプション未登録", kind: "not-started", attention: false };
+  };
+  const regularRows = regular.map((work) => {
+    const workInfo = stateInfo(work.workflow_state), caption = captionInfo(captions.get(work.id));
+    if (rescueIds.has(work.id)) Object.assign(workInfo, { label: "再登録が必要", kind: "current", attention: true });
+    return `<li><strong>作品 ${work.sort_order}${work.replacement_for_work_id ? "（Replacement）" : ""}</strong><span class="exhibition-progress-pills">${exhibitionProgressPill(workInfo.label, workInfo.kind, workInfo.attention)}${exhibitionProgressPill(caption.label, caption.kind, caption.attention)}</span></li>`;
+  }).join("") || '<li class="muted">個人枠作品はまだありません。</li>';
+  const smartphoneRows = smartphone.map((work) => {
+    const info = stateInfo(work.workflow_state);
+    if (rescueIds.has(work.id)) Object.assign(info, { label: "再登録が必要", kind: "current", attention: true });
+    return `<li><strong>スマホ作品 ${work.sort_order}</strong>${exhibitionProgressPill(info.label, info.kind, info.attention)}</li>`;
+  }).join("") || '<li class="muted">スマホ枠作品はまだありません。</li>';
+  const activeSmartphone = smartphone.filter((work) => work.workflow_state !== "withdrawn"), smartphoneAttention = activeSmartphone.some((work) => stateInfo(work.workflow_state).attention || rescueIds.has(work.id)),
+    smartphoneComplete = activeSmartphone.length > 0 && activeSmartphone.every((work) => work.workflow_state === "accepted"), applicationActive = entry?.application_state === "active";
+  root.innerHTML = `<div class="entry-heading"><div><span class="tag">PROGRESS</span><h2>提出状況</h2></div>${exhibitionProgressPill(applicationActive ? "出展申込済み" : entry ? "申込入力中" : "未申込", applicationActive ? "complete" : entry ? "current" : "not-started", false)}</div><div class="exhibition-deadlines"><span>申込 ${fmtJst(event.exhibition_application_deadline)}</span><span>作品 ${fmtJst(event.exhibition_work_submission_deadline)}</span><span>修正 ${fmtJst(event.exhibition_revision_deadline)}</span><span>Caption ${fmtJst(event.exhibition_caption_deadline)}</span></div><section class="exhibition-progress-group"><h3>個人枠</h3><ul>${regularRows}</ul></section>${event.smartphone_exhibition_enabled ? `<details class="exhibition-progress-group smartphone-progress"><summary>スマホ枠 ${exhibitionProgressPill(smartphoneComplete ? "全作品確認済み" : activeSmartphone.length ? "対応中" : "未着手", smartphoneComplete ? "complete" : activeSmartphone.length ? "current" : "not-started", smartphoneAttention)}</summary><ul>${smartphoneRows}</ul></details>` : ""}<div class="progress-legend"><span class="complete">完了</span><span class="current">進行中</span><span class="not-started">未着手</span><span class="needs-action">! 対応が必要</span></div>`;
+}
+
 async function renderExhibitionApplicationV2(event, context) {
   layout(
     "写真展出展申込",
@@ -870,6 +1056,10 @@ async function renderExhibitionApplicationV2(event, context) {
     const lastAcceptance = agreementStatus.acceptances?.at(-1);
     view.innerHTML = `<nav class="exhibition-mypage-nav" aria-label="写真展マイページ内ナビゲーション"><button type="button" data-section="exhibitionOverview">概要</button><button type="button" data-section="exhibitionApplication">出展</button><button type="button" data-section="v2WorkManager">作品</button><button type="button" data-section="v2CaptionManager">キャプション</button><button type="button" data-section="exhibitionShift">シフト</button></nav><section id="exhibitionOverview" class="panel exhibition-scroll-target"><span class="tag">EXHIBITION MY PAGE</span><h2>${esc(event.exhibition_title || event.title)}</h2><dl><dt>開催日時</dt><dd>${fmt(event.starts_at)}${event.ends_at ? ` 〜 ${fmt(event.ends_at)}` : ""}</dd><dt>出展申込締切</dt><dd>${fmt(event.exhibition_application_deadline)}</dd><dt>作品提出締切</dt><dd>${fmt(event.exhibition_work_submission_deadline)}</dd><dt>修正期限</dt><dd>${fmt(event.exhibition_revision_deadline)}</dd><dt>キャプション締切</dt><dd>${fmt(event.exhibition_caption_deadline)}</dd><dt>場所</dt><dd>${esc(event.place)}</dd><dt>出展上限</dt><dd>1人 ${event.max_works}作品</dd></dl><p class="copy">${esc(event.details)}</p></section><section id="exhibitionApplication" class="panel exhibition-entry-panel exhibition-scroll-target"><div class="entry-heading"><div><span class="tag">YOUR APPLICATION</span><h2>出展申込</h2></div><span class="status">${stateLabel}</span></div><div class="section-message notice hidden" role="status" aria-live="polite"></div><p class="muted">出展申込とシフト希望は独立しています。シフトだけ参加する場合、出展申込は不要です。</p>${agreementStatus.agreementStale ? `<section class="notice error agreement-reagreement"><h3>写真展の出展規約が改定されました</h3><dl><dt>現在同意済み</dt><dd>${esc(lastAcceptance?.referenceKey || "確認できません")}</dd><dt>新しい規約</dt><dd>${esc(agreement.referenceKey)}</dd></dl><div class="agreement-scroll">${esc(agreement.content)}</div><label><input type="checkbox" id="reagreementConfirmed">新しい規約全文を確認し、再同意します</label><div class="actions"><button type="button" id="reagreeApplication">新しい規約に再同意</button></div></section>` : ""}${autoCancelled ? '<div class="notice error">有効な作品がなくなったため申込はSYSTEMにより自動取消されました。復活が必要な場合は幹部へ連絡してください。</div>' : ""}${!applicationOpen && !active && !autoCancelled ? '<div class="notice error">出展申込受付は終了しました。</div>' : ""}${active ? '<div class="notice">出展申込は成立しています。作品は作品提出締切までに、後続の作品提出画面から登録します。</div>' : ""}${active && !workingOpen && !(entry?.revival_deadline && now < new Date(entry.revival_deadline).getTime()) ? '<div class="notice error">作品提出締切を過ぎたため、申込内容は変更できません。</div>' : ""}<form id="applicationForm" class="stack"><label>出展予定作品数<input type="number" name="planned_work_count" min="1" max="${event.max_works}" required value="${entry?.planned_work_count || 1}"><small>予定数です。最終的な提出作品数を固定するものではありません。</small></label><fieldset><legend>作者表示名</legend><label><input type="radio" name="display_name_type" value="real_name" ${initialType === "real_name" ? "checked" : ""}>本名（${esc(context.member.name)}）</label><label><input type="radio" name="display_name_type" value="pseudonym" ${initialType === "pseudonym" ? "checked" : ""}>ペンネーム</label><label id="pseudonymField" class="${initialType === "pseudonym" ? "" : "hidden"}">ペンネーム<input name="display_name_value" maxlength="100" value="${esc(initialType === "pseudonym" ? initialName : "")}"></label></fieldset><label>申込に関する備考（任意）<textarea name="note" maxlength="3000" rows="4">${esc(entry?.note || "")}</textarea></label>${active || autoCancelled ? "" : `<section class="notice agreement"><h3>Application Agreement</h3><p class="muted">${esc(agreement.referenceKey)}／Version ${agreement.versionNo}</p><div class="agreement-scroll">${esc(agreement.content)}</div><p><strong>重要：</strong>作品提出締切時点で正式提出作品が0件の場合、申込はSYSTEMにより自動取消されます。</p><label><input type="checkbox" name="agreement_confirmed" required>同意内容と重要事項を確認し、同意します</label></section>`}<div class="actions">${active || autoCancelled ? "" : `<button type="button" id="saveApplicationDraft" class="secondary" ${canEdit ? "" : "disabled"}>下書き保存</button>`}<button type="submit" id="applicationPrimary" ${canEdit ? "" : "disabled"}>${active ? "変更を保存" : withdrawn ? "再申込内容を確認" : "申込内容を確認"}</button>${active && applicationOpen ? '<button type="button" id="withdrawApplication" class="danger">申込を取り消す</button>' : ""}</div></form><section id="applicationConfirmation" class="stack hidden"></section></section>`;
 
+    view.querySelector(".exhibition-mypage-nav").insertAdjacentHTML(
+      "afterend",
+      '<section id="exhibitionProgress" class="panel exhibition-progress"><p class="muted">進捗を読み込んでいます…</p></section>',
+    );
     const plannedWorkInput = view.querySelector('[name="planned_work_count"]');
     plannedWorkInput.min = "0";
     plannedWorkInput.value = String(entry?.planned_work_count ?? 1);
@@ -1022,6 +1212,7 @@ async function renderExhibitionApplicationV2(event, context) {
       if (event.smartphone_exhibition_enabled)
         await renderExhibitionSmartphoneWorksV1(event, context, entry);
     }
+    await renderExhibitionMemberProgress(event, entry);
     await renderExhibitionShiftMember(event);
     setupExhibitionMyPageNavigation();
     requestAnimationFrame(() => requestAnimationFrame(focusPendingExhibitionAction));
@@ -1103,23 +1294,28 @@ async function renderExhibitionWorksV2(event, context, entry) {
   host.querySelectorAll("#v2WorkManager").forEach((node) => node.remove());
   host.insertAdjacentHTML(
     "beforeend",
-    '<section id="v2WorkManager" class="panel exhibition-scroll-target"><div class="entry-heading"><div><span class="tag">WORK SUBMISSION</span><h2>個人枠</h2></div><button id="newV2Work" class="secondary">個人枠作品を追加</button></div><div class="section-message notice hidden" role="status" aria-live="polite"></div><p class="muted">通常の作品として出展します。キャプション情報は別工程で登録します。作品確認済みは最終的な「出展確定」ではありません。</p><div id="v2WorkSummary" class="summary-strip"></div><div id="v2WorkList" class="stack"></div><div class="actions"><button id="submitV2WorkBatch">提出可能な個人枠作品をまとめて正式提出</button></div></section>',
+    '<section id="v2WorkManager" class="panel exhibition-scroll-target"><div class="entry-heading"><div><span class="tag">WORK SUBMISSION</span><h2>個人枠</h2></div><button id="newV2Work" class="secondary">個人枠作品を追加</button></div><div class="section-message notice hidden" role="status" aria-live="polite"></div><p class="muted">一時保存しただけでは登録されません。「作品を登録する」を押し、確認後にDB上で提出済みとなった作品だけが正式登録です。キャプション情報は別工程で登録します。</p><div id="v2WorkSummary" class="summary-strip"></div><div id="v2WorkList" class="stack"></div><div class="actions"><button id="submitV2WorkBatch">作品を登録する</button></div></section>',
   );
   const root = document.querySelector("#v2WorkManager"),
-    [{ data: works, error }, { data: cases, error: casesError }, { data: reviews, error: reviewsError }] =
+    [{ data: works, error }, { data: cases, error: casesError }, { data: reviews, error: reviewsError }, { data: rescueTargets, error: rescueError }] =
       await Promise.all([
         supabase.from("exhibition_works").select("*").eq("entry_id", entry.id).order("sort_order"),
         supabase.from("exhibition_workflow_cases").select("*").eq("event_id", event.id).order("requested_at", { ascending: false }),
         supabase.from("exhibition_work_reviews").select("*").in("work_id", ["00000000-0000-0000-0000-000000000000"]),
+        supabase.rpc("get_my_exhibition_draft_rescue_targets_v1", { p_event_id: event.id }),
       ]);
   if (error) throw error;
   if (casesError) throw casesError;
   if (reviewsError) throw reviewsError;
+  if (rescueError) throw rescueError;
   if (!host.isConnected || host.dataset.workRenderToken !== renderToken) return;
   const activeWorks = (works || []).filter((work) => work.workflow_state !== "withdrawn"),
     logicalActiveWorks = getLogicalActiveRegularWorks(works),
     memberWorkNumbers = createMemberRegularWorkNumberMap(works),
-    workIds = activeWorks.map((work) => work.id);
+    workIds = activeWorks.map((work) => work.id),
+    rescueByWork = new Map((rescueTargets || []).filter((item) => item.target_type === "regular_work").map((item) => [item.work_id,item])),
+    ordinaryWorkOpen = Date.now() < new Date(event.exhibition_work_submission_deadline).getTime()
+      || Boolean(entry.revival_deadline && Date.now() < new Date(entry.revival_deadline).getTime());
   let reviewRows = reviews || [];
   if (workIds.length) {
     const { data, error: reviewLoadError } = await supabase
@@ -1152,12 +1348,13 @@ async function renderExhibitionWorksV2(event, context, entry) {
               ? "再編集申請中"
               : work.workflow_state === "reedit_editing"
                 ? "再編集中"
-                : "Draft";
-  root.querySelector("#v2WorkSummary").innerHTML = `<span><strong>通常作品：登録中 ${logicalActiveWorks.length} / ${event.max_works}点</strong></span><span>提出可能 ${activeWorks.filter(ready).length}点</span><span>未完成 ${activeWorks.filter((work) => editableStates.has(work.workflow_state) && !ready(work)).length}点</span><span>確認待ち ${activeWorks.filter((work) => work.workflow_state === "submitted").length}点</span><span>作品確認済み ${activeWorks.filter((work) => work.workflow_state === "accepted").length}点</span>`;
+                : "下書き・未登録";
+  root.querySelector("#v2WorkSummary").innerHTML = `<span><strong>通常作品：登録枠使用 ${logicalActiveWorks.length} / ${event.max_works}点</strong></span><span>正式登録可能 ${activeWorks.filter(ready).length}点</span><span>下書き・未完成 ${activeWorks.filter((work) => editableStates.has(work.workflow_state) && !ready(work)).length}点</span><span>登録済み・確認待ち ${activeWorks.filter((work) => work.workflow_state === "submitted").length}点</span><span>登録済み・作品確認済み ${activeWorks.filter((work) => work.workflow_state === "accepted").length}点</span>`;
   const list = root.querySelector("#v2WorkList");
   if (!activeWorks.length) list.innerHTML = '<p class="muted">作品Draftはまだありません。</p>';
   activeWorks.forEach((work) => {
-    const editable = editableStates.has(work.workflow_state),
+    const rescue = rescueByWork.get(work.id),
+      editable = editableStates.has(work.workflow_state) && (work.workflow_state !== "draft" || ordinaryWorkOpen || rescue),
       memberNumber = memberWorkNumbers.get(work.id),
       activeReplacement = activeWorks.find((item) => item.replacement_for_work_id === work.id),
       replacementLabel = work.replacement_for_work_id
@@ -1171,7 +1368,7 @@ async function renderExhibitionWorksV2(event, context, entry) {
       );
     list.insertAdjacentHTML(
       "beforeend",
-      `<article class="work-editor v2-work-card" data-id="${work.id}"><div class="work-editor-head"><div><span class="tag">作品${memberNumber}${replacementLabel}</span><h3>${stateLabel(work)}</h3></div><span class="status">${ready(work) ? "提出可能" : editable ? "未完成" : "ロック中"}</span></div>${latestReview?.result === "rejected" ? `<div class="notice error"><strong>要修正：</strong>${esc((latestReview.problem_fields || []).join("・"))}<br>${esc(latestReview.reason)}</div>` : ""}${openCase?.individual_deadline ? `<p class="notice">個別期限：${fmt(openCase.individual_deadline)}</p>` : ""}<div id="work-preview-${work.id}" class="work-preview member-work-preview" data-work-id="${work.id}" data-storage-bucket="${work.preview_image_path ? "exhibition-previews" : "exhibition-originals"}" data-storage-path="${esc(work.preview_image_path || work.original_image_path || "")}"><span class="muted">${work.preview_image_path || work.original_image_path ? "現在登録されている画像を読み込んでいます…" : "画像はまだ登録されていません。"}</span></div><div class="form-grid"><label>原画像<input name="original" type="file" accept="image/jpeg,image/png,image/tiff,image/heic,image/heif,.jpg,.jpeg,.png,.tif,.tiff,.heic,.heif" ${editable ? "" : "disabled"}><small>${work.original_image_path ? `登録済み：${esc(work.original_image_path.split("/").pop())}` : "未登録"}</small></label><label>向き<select name="orientation" ${editable ? "" : "disabled"}><option value="">選択</option><option value="portrait" ${work.orientation === "portrait" ? "selected" : ""}>縦</option><option value="landscape" ${work.orientation === "landscape" ? "selected" : ""}>横</option></select></label><label>プリントサイズ<select name="print_size" ${editable ? "" : "disabled"}><option value="">選択</option>${["A4", "A3", "A2", "composite", "other"].map((value) => `<option value="${value}" ${work.print_size === value ? "selected" : ""}>${value === "composite" ? "組み写真" : value === "other" ? "その他" : value}</option>`).join("")}</select></label><label>サイズ詳細<input name="print_size_detail" value="${esc(work.print_size_detail || "")}" ${editable ? "" : "disabled"}></label><label>壁面占有幅（mm）<input name="occupied_width_mm" type="number" min="0.01" step="0.01" value="${work.occupied_width_mm || ""}" ${editable ? "" : "disabled"}></label><label>壁面占有高さ（mm）<input name="occupied_height_mm" type="number" min="0.01" step="0.01" value="${work.occupied_height_mm || ""}" ${editable ? "" : "disabled"}></label><fieldset class="full"><legend>写真展サイト掲載</legend><label><input type="radio" name="publication_consent_${work.id}" value="true" ${work.publication_consent === true ? "checked" : ""} ${editable ? "" : "disabled"}>同意する</label><label><input type="radio" name="publication_consent_${work.id}" value="false" ${work.publication_consent === false ? "checked" : ""} ${editable ? "" : "disabled"}>同意しない</label></fieldset></div><div class="actions">${editable ? '<button class="save-v2-work">Draft保存</button>' : ""}${work.workflow_state === "accepted" ? '<button class="request-reedit secondary">再編集を申請</button>' : ""}${work.workflow_state === "reedit_pending" && openCase ? '<button class="cancel-reedit secondary">再編集申請を取り消す</button>' : ""}${work.workflow_state === "reedit_editing" && openCase ? '<button class="restore-accepted secondary">変更を取りやめる</button>' : ""}${new Date() < new Date(event.exhibition_work_submission_deadline) && !work.replacement_for_work_id ? '<button class="start-replacement secondary">別作品へ差し替える</button>' : ""}${work.replacement_for_work_id && work.workflow_state === "draft" ? '<button class="cancel-replacement secondary">差し替えを取り消す</button>' : ""}<button class="withdraw-v2-work danger">作品を取り下げる</button></div></article>`,
+      `<article class="work-editor v2-work-card" data-id="${work.id}"><div class="work-editor-head"><div><span class="tag">作品${memberNumber}${replacementLabel}</span><h3>${stateLabel(work)}</h3></div><span class="status">${work.workflow_state === "draft" ? rescue ? "再登録が必要" : ready(work) ? "正式登録可能" : "下書き・未登録" : work.workflow_state === "rejected" ? "修正・再登録が必要" : ["submitted","accepted"].includes(work.workflow_state) ? "登録済み" : editable ? "編集中・未登録" : "ロック中"}</span></div>${rescue ? `<div class="notice error"><strong>この作品は再登録が必要です。</strong><p>本人再登録期限：${fmt(rescue.deadline)}</p><p>内容と画像を確認し、「作品を登録する」を押してください。</p></div>` : ""}${latestReview?.result === "rejected" ? `<div class="notice error"><strong>要修正：</strong>${esc((latestReview.problem_fields || []).join("・"))}<br>${esc(latestReview.reason)}</div>` : ""}${openCase?.individual_deadline ? `<p class="notice">個別期限：${fmt(openCase.individual_deadline)}</p>` : ""}<div id="work-preview-${work.id}" class="work-preview member-work-preview" data-work-id="${work.id}" data-storage-bucket="${work.preview_image_path ? "exhibition-previews" : "exhibition-originals"}" data-storage-path="${esc(work.preview_image_path || work.original_image_path || "")}"><span class="muted">${work.preview_image_path || work.original_image_path ? "現在登録されている画像を読み込んでいます…" : "画像はまだ登録されていません。"}</span></div><div class="form-grid"><label>原画像<input name="original" type="file" accept="image/jpeg,image/png,image/tiff,image/heic,image/heif,.jpg,.jpeg,.png,.tif,.tiff,.heic,.heif" ${editable ? "" : "disabled"}><small>${work.original_image_path ? `一時保存済み：${esc(work.original_image_path.split("/").pop())}` : "未登録"}</small></label><label>向き<select name="orientation" ${editable ? "" : "disabled"}><option value="">選択</option><option value="portrait" ${work.orientation === "portrait" ? "selected" : ""}>縦</option><option value="landscape" ${work.orientation === "landscape" ? "selected" : ""}>横</option></select></label><label>プリントサイズ<select name="print_size" ${editable ? "" : "disabled"}><option value="">選択</option>${["A4", "A3", "A2", "composite", "other"].map((value) => `<option value="${value}" ${work.print_size === value ? "selected" : ""}>${value === "composite" ? "組み写真" : value === "other" ? "その他" : value}</option>`).join("")}</select></label><label>サイズ詳細<input name="print_size_detail" value="${esc(work.print_size_detail || "")}" ${editable ? "" : "disabled"}></label><label>壁面占有幅（mm）<input name="occupied_width_mm" type="number" min="0.01" step="0.01" value="${work.occupied_width_mm || ""}" ${editable ? "" : "disabled"}></label><label>壁面占有高さ（mm）<input name="occupied_height_mm" type="number" min="0.01" step="0.01" value="${work.occupied_height_mm || ""}" ${editable ? "" : "disabled"}></label><fieldset class="full"><legend>写真展サイト掲載</legend><label><input type="radio" name="publication_consent_${work.id}" value="true" ${work.publication_consent === true ? "checked" : ""} ${editable ? "" : "disabled"}>同意する</label><label><input type="radio" name="publication_consent_${work.id}" value="false" ${work.publication_consent === false ? "checked" : ""} ${editable ? "" : "disabled"}>同意しない</label></fieldset></div><div class="actions">${editable ? '<button class="save-v2-work secondary">一時保存</button>' : ""}${work.workflow_state === "accepted" ? '<button class="request-reedit secondary">再編集を申請</button>' : ""}${work.workflow_state === "reedit_pending" && openCase ? '<button class="cancel-reedit secondary">再編集申請を取り消す</button>' : ""}${work.workflow_state === "reedit_editing" && openCase ? '<button class="restore-accepted secondary">変更を取りやめる</button>' : ""}${new Date() < new Date(event.exhibition_work_submission_deadline) && !work.replacement_for_work_id ? '<button class="start-replacement secondary">別作品へ差し替える</button>' : ""}${work.replacement_for_work_id && work.workflow_state === "draft" ? '<button class="cancel-replacement secondary">差し替えを取り消す</button>' : ""}<button class="withdraw-v2-work danger">作品を取り下げる</button></div></article>`,
     );
   });
   await Promise.all(
@@ -1194,7 +1391,7 @@ async function renderExhibitionWorksV2(event, context, entry) {
       ),
   );
   if (!root.isConnected || host.dataset.workRenderToken !== renderToken) return;
-  root.querySelector("#newV2Work").disabled = logicalActiveWorks.length >= event.max_works;
+  root.querySelector("#newV2Work").disabled = !ordinaryWorkOpen || logicalActiveWorks.length >= event.max_works;
   root.querySelector("#newV2Work").onclick = async () => {
     const { error } = await supabase.rpc("save_exhibition_work_draft_v2", {
       p_event_id: event.id, p_work_id: null, p_title: "", p_orientation: "", p_print_size: "",
@@ -1231,7 +1428,7 @@ async function renderExhibitionWorksV2(event, context, entry) {
           p_original_image_path: path, p_original_sha256: hash,
         });
         if (error) throw error;
-        await renderExhibitionApplicationV2(event, context); sectionMessage("#v2WorkManager", "作品Draftを保存しました。");
+        await renderExhibitionApplicationV2(event, context); sectionMessage("#v2WorkManager", "一時保存しました。まだ正式登録は完了していません。");
       } catch (saveError) { sectionFailure("#v2WorkManager", saveError); }
     });
     card.querySelector(".withdraw-v2-work").onclick = async () => {
@@ -1266,34 +1463,44 @@ async function renderExhibitionWorksV2(event, context, entry) {
       if (error) return sectionFailure("#v2WorkManager", error); await renderExhibitionApplicationV2(event, context); sectionMessage("#v2WorkManager", "作品の差し替えを取り消しました。");
     });
   });
-  const readyIds = activeWorks.filter(ready).map((work) => work.id);
+  const readyIds = activeWorks.filter((work) => ready(work) && (work.workflow_state !== "draft" || ordinaryWorkOpen || rescueByWork.has(work.id))).map((work) => work.id);
   root.querySelector("#submitV2WorkBatch").disabled = !readyIds.length;
   root.querySelector("#submitV2WorkBatch").onclick = async () => {
-    if (!confirm(`提出可能な${readyIds.length}作品を正式提出しますか？未完成Draftは残ります。`)) return;
+    if (!confirm(`提出可能な${readyIds.length}作品を正式登録します。登録後は確認待ちとなり、通常の下書き編集はできません。よろしいですか？`)) return;
     const { data, error } = await supabase.rpc("submit_exhibition_work_batch_v2", { p_event_id: event.id, p_work_ids: readyIds });
     if (error) return sectionFailure("#v2WorkManager", error);
+    const submittedIds = data.submittedWorkIds || [], verified = submittedIds.length
+      ? await supabase.from("exhibition_works").select("id,workflow_state").in("id", submittedIds)
+      : { data: [] };
+    if (verified.error || verified.data.length !== submittedIds.length || verified.data.some((item) => item.workflow_state !== "submitted"))
+      return sectionFailure("#v2WorkManager", verified.error || new Error("正式登録状態を確認できませんでした。画面を再読み込みしてください。"));
     await renderExhibitionApplicationV2(event, context);
-    sectionMessage("#v2WorkManager", `${data.submittedWorkIds?.length || 0}作品を正式提出しました。`);
+    sectionMessage("#v2WorkManager", `登録完了：${submittedIds.length}作品を正式登録しました。`);
   };
   await renderExhibitionCaptionsV2(event, context, entry, activeWorks, memberWorkNumbers);
 }
 
 async function renderExhibitionSmartphoneWorksV1(event, context, entry) {
   const host = document.querySelector("#view");
-  host.insertAdjacentHTML("beforeend", `<section id="smartphoneWorkManager" class="panel exhibition-scroll-target"><div class="entry-heading"><div><span class="tag">SMARTPHONE EXHIBITION</span><h2>スマホ枠</h2></div><button id="newSmartphoneWork" class="secondary">スマホ枠作品を追加</button></div><div class="section-message notice hidden" role="status" aria-live="polite"></div><p class="muted">スマートフォンで撮影した写真を、2L判・匿名・タイトルなしで集合展示します。個別のWeb掲載とCaption登録はありません。</p><div id="smartphoneWorkSummary" class="summary-strip"></div><div id="smartphoneWorkList" class="stack"></div></section>`);
+  host.insertAdjacentHTML("beforeend", `<section id="smartphoneWorkManager" class="panel exhibition-scroll-target"><div class="entry-heading"><div><span class="tag">SMARTPHONE EXHIBITION</span><h2>スマホ枠</h2></div><button id="newSmartphoneWork" class="secondary">スマホ枠作品を追加</button></div><div class="section-message notice hidden" role="status" aria-live="polite"></div><p class="muted">スマートフォンで撮影した写真を、2L判・匿名・タイトルなしで集合展示します。一時保存しただけでは登録されません。各作品の「作品を登録する」で正式登録してください。</p><div id="smartphoneWorkSummary" class="summary-strip"></div><div id="smartphoneWorkList" class="stack"></div></section>`);
   const root = document.querySelector("#smartphoneWorkManager"),
-    [{ data: works, error }, { data: cases, error: caseError }, { data: reviews, error: reviewError }, { data: terms, error: termsError }] = await Promise.all([
+    [{ data: works, error }, { data: cases, error: caseError }, { data: reviews, error: reviewError }, { data: terms, error: termsError }, { data: rescueTargets, error: rescueError }] = await Promise.all([
       supabase.from("exhibition_smartphone_works").select("*").eq("entry_id", entry.id).order("sort_order"),
       supabase.from("exhibition_smartphone_workflow_cases").select("*").eq("event_id", event.id).order("requested_at", { ascending: false }),
       supabase.from("exhibition_smartphone_work_reviews").select("*").eq("smartphone_work_id", "00000000-0000-0000-0000-000000000000"),
       supabase.rpc("get_exhibition_smartphone_terms_v1"),
+      supabase.rpc("get_my_exhibition_draft_rescue_targets_v1", { p_event_id: event.id }),
     ]);
   if (error) throw error;
   if (caseError) throw caseError;
   if (reviewError) throw reviewError;
   if (termsError) throw termsError;
+  if (rescueError) throw rescueError;
   const activeWorks = (works || []).filter((work) => work.workflow_state !== "withdrawn"),
-    ids = activeWorks.map((work) => work.id);
+    ids = activeWorks.map((work) => work.id),
+    rescueByWork = new Map((rescueTargets || []).filter((item) => item.target_type === "smartphone_work").map((item) => [item.work_id,item])),
+    ordinaryWorkOpen = Date.now() < new Date(event.exhibition_work_submission_deadline).getTime()
+      || Boolean(entry.revival_deadline && Date.now() < new Date(entry.revival_deadline).getTime());
   let reviewRows = reviews || [];
   if (ids.length) {
     const loaded = await supabase.from("exhibition_smartphone_work_reviews").select("*").in("smartphone_work_id", ids).order("reviewed_at", { ascending: false });
@@ -1305,16 +1512,17 @@ async function renderExhibitionSmartphoneWorksV1(event, context, entry) {
       ["portrait", "landscape"].includes(work.orientation) && work.smartphone_confirmed &&
       ["none", "declared"].includes(work.ai_processing_declaration) &&
       (work.ai_processing_declaration !== "declared" || work.ai_processing_details?.trim()),
-    labels = { draft:"Draft",submitted:"確認待ち",accepted:"スマホ枠として審査完了",rejected:"要修正",reedit_pending:"再編集申請中",reedit_editing:"再編集中" };
+    labels = { draft:"下書き・未登録",submitted:"登録済み・確認待ち",accepted:"登録済み・スマホ枠として審査完了",rejected:"修正・再登録が必要",reedit_pending:"再編集申請中",reedit_editing:"再編集中・未登録" };
   root.querySelector("#smartphoneWorkSummary").innerHTML = `<span>有効 ${activeWorks.length} / ${event.max_smartphone_works}作品</span><span>提出可能 ${activeWorks.filter(ready).length}作品</span><span>確認待ち ${activeWorks.filter((work) => work.workflow_state === "submitted").length}作品</span><span>審査完了 ${activeWorks.filter((work) => work.workflow_state === "accepted").length}作品</span>`;
-  root.querySelector("#newSmartphoneWork").disabled = activeWorks.length >= Number(event.max_smartphone_works || 0);
+  root.querySelector("#newSmartphoneWork").disabled = !ordinaryWorkOpen || activeWorks.length >= Number(event.max_smartphone_works || 0);
   const list = root.querySelector("#smartphoneWorkList");
   if (!activeWorks.length) list.innerHTML = '<p class="muted">スマホ枠作品はまだありません。</p>';
   for (const work of activeWorks) {
-    const editable = editableStates.has(work.workflow_state),
+    const rescue = rescueByWork.get(work.id),
+      editable = editableStates.has(work.workflow_state) && (work.workflow_state !== "draft" || ordinaryWorkOpen || rescue),
       openCase = (cases || []).find((item) => item.smartphone_work_id === work.id && ["pending","open","permitted"].includes(item.state)),
       latestReview = reviewRows.find((item) => item.smartphone_work_id === work.id);
-    list.insertAdjacentHTML("beforeend", `<article class="work-editor smartphone-work-card" data-id="${work.id}"><div class="work-editor-head"><div><span class="tag">スマホ作品 #${work.sort_order}</span><h3>${esc(labels[work.workflow_state] || work.workflow_state)}</h3></div><span class="status">${ready(work) ? "提出可能" : editable ? "未完成" : "ロック中"}</span></div><div class="smartphone-card-message notice hidden" role="status"></div>${latestReview?.result === "rejected" ? `<div class="notice error"><strong>要修正：</strong>${esc((latestReview.problem_fields || []).join("・"))}<br>${esc(latestReview.reason)}</div>` : ""}${openCase?.individual_deadline ? `<p class="notice">個別期限：${fmt(openCase.individual_deadline)}</p>` : ""}<div class="work-preview smartphone-work-preview" data-storage-path="${esc(work.original_image_path || "")}"><span class="muted">${work.original_image_path ? "現在登録されている画像を読み込んでいます…" : "画像はまだ登録されていません。"}</span></div><div class="form-grid"><label>原画像<input name="original" type="file" accept="image/jpeg,image/png,image/tiff,image/heic,image/heif,.jpg,.jpeg,.png,.tif,.tiff,.heic,.heif" ${editable ? "" : "disabled"}><small>${work.original_image_path ? `登録済み：${esc(work.original_image_path.split("/").pop())}` : "未登録（必須）"}</small></label><label>向き<select name="orientation" ${editable ? "" : "disabled"}><option value="">選択</option><option value="portrait" ${work.orientation === "portrait" ? "selected" : ""}>縦</option><option value="landscape" ${work.orientation === "landscape" ? "selected" : ""}>横</option></select></label><div class="notice"><strong>プリントサイズ：2L判（固定）</strong><br>匿名・タイトルなしで集合展示します。</div><label class="full"><input type="checkbox" name="smartphone_confirmed" ${work.smartphone_confirmed ? "checked" : ""} ${editable ? "" : "disabled"}>この作品がスマートフォンで撮影した写真であることを確認しました</label><fieldset class="full"><legend>AI生成・合成等の申告（必須）</legend><p class="muted">元画像にない視覚的内容の生成・追加、または複数画像からのシーン構成が対象です。通常のRAW現像、露出・色調整、クロップ、ノイズ除去等は原則申告不要です。</p><label><input type="radio" name="smartphone_ai_${work.id}" value="none" ${work.ai_processing_declaration === "none" ? "checked" : ""} ${editable ? "" : "disabled"}>なし</label><label><input type="radio" name="smartphone_ai_${work.id}" value="declared" ${work.ai_processing_declaration === "declared" ? "checked" : ""} ${editable ? "" : "disabled"}>あり</label><label>申告内容<textarea name="ai_processing_details" maxlength="3000" ${editable ? "" : "disabled"}>${esc(work.ai_processing_details || "")}</textarea></label></fieldset></div>${editable ? `<section class="notice smartphone-terms"><h4>スマホ枠追加同意</h4><p class="muted">${esc(terms.referenceKey)}／Version ${terms.versionNo}</p><div class="agreement-scroll">${esc(terms.content)}</div><label><input type="checkbox" name="smartphone_terms_confirmed">正式提出時にこの内容へ同意します</label></section>` : ""}<div class="actions">${editable ? '<button class="save-smartphone secondary">Draft保存</button><button class="submit-smartphone">正式提出</button>' : ""}${work.workflow_state === "accepted" ? '<button class="request-smartphone-reedit secondary">再編集を申請</button>' : ""}${work.workflow_state === "reedit_pending" && openCase ? '<button class="cancel-smartphone-reedit secondary">再編集申請を取り消す</button>' : ""}${work.workflow_state === "reedit_editing" && openCase ? '<button class="restore-smartphone secondary">変更を取りやめる</button>' : ""}<button class="withdraw-smartphone danger">取り下げる</button></div></article>`);
+    list.insertAdjacentHTML("beforeend", `<article class="work-editor smartphone-work-card" data-id="${work.id}"><div class="work-editor-head"><div><span class="tag">スマホ作品 #${work.sort_order}</span><h3>${esc(labels[work.workflow_state] || work.workflow_state)}</h3></div><span class="status">${work.workflow_state === "draft" ? rescue ? "再登録が必要" : ready(work) ? "正式登録可能" : "下書き・未登録" : work.workflow_state === "rejected" ? "修正・再登録が必要" : ["submitted","accepted"].includes(work.workflow_state) ? "登録済み" : editable ? "編集中・未登録" : "ロック中"}</span></div><div class="smartphone-card-message notice hidden" role="status"></div>${rescue ? `<div class="notice error"><strong>このスマホ作品は再登録が必要です。</strong><p>本人再登録期限：${fmt(rescue.deadline)}</p><p>画像と申告内容を確認し、「作品を登録する」を押してください。</p></div>` : ""}${latestReview?.result === "rejected" ? `<div class="notice error"><strong>要修正：</strong>${esc((latestReview.problem_fields || []).join("・"))}<br>${esc(latestReview.reason)}</div>` : ""}${openCase?.individual_deadline ? `<p class="notice">個別期限：${fmt(openCase.individual_deadline)}</p>` : ""}<div class="work-preview smartphone-work-preview" data-storage-path="${esc(work.original_image_path || "")}"><span class="muted">${work.original_image_path ? "現在登録されている画像を読み込んでいます…" : "画像はまだ登録されていません。"}</span></div><div class="form-grid"><label>原画像<input name="original" type="file" accept="image/jpeg,image/png,image/tiff,image/heic,image/heif,.jpg,.jpeg,.png,.tif,.tiff,.heic,.heif" ${editable ? "" : "disabled"}><small>${work.original_image_path ? `一時保存済み：${esc(work.original_image_path.split("/").pop())}` : "未登録（必須）"}</small></label><label>向き<select name="orientation" ${editable ? "" : "disabled"}><option value="">選択</option><option value="portrait" ${work.orientation === "portrait" ? "selected" : ""}>縦</option><option value="landscape" ${work.orientation === "landscape" ? "selected" : ""}>横</option></select></label><div class="notice"><strong>プリントサイズ：2L判（固定）</strong><br>匿名・タイトルなしで集合展示します。</div><label class="full"><input type="checkbox" name="smartphone_confirmed" ${work.smartphone_confirmed ? "checked" : ""} ${editable ? "" : "disabled"}>この作品がスマートフォンで撮影した写真であることを確認しました</label><fieldset class="full"><legend>AI生成・合成等の申告（必須）</legend><p class="muted">元画像にない視覚的内容の生成・追加、または複数画像からのシーン構成が対象です。通常のRAW現像、露出・色調整、クロップ、ノイズ除去等は原則申告不要です。</p><label><input type="radio" name="smartphone_ai_${work.id}" value="none" ${work.ai_processing_declaration === "none" ? "checked" : ""} ${editable ? "" : "disabled"}>なし</label><label><input type="radio" name="smartphone_ai_${work.id}" value="declared" ${work.ai_processing_declaration === "declared" ? "checked" : ""} ${editable ? "" : "disabled"}>あり</label><label>申告内容<textarea name="ai_processing_details" maxlength="3000" ${editable ? "" : "disabled"}>${esc(work.ai_processing_details || "")}</textarea></label></fieldset></div>${editable ? `<section class="notice smartphone-terms"><h4>スマホ枠追加同意</h4><p class="muted">${esc(terms.referenceKey)}／Version ${terms.versionNo}</p><div class="agreement-scroll">${esc(terms.content)}</div><label><input type="checkbox" name="smartphone_terms_confirmed">正式登録時にこの内容へ同意します</label></section>` : ""}<div class="actions">${editable ? '<button class="save-smartphone secondary">一時保存</button><button class="submit-smartphone">作品を登録する</button>' : ""}${work.workflow_state === "accepted" ? '<button class="request-smartphone-reedit secondary">再編集を申請</button>' : ""}${work.workflow_state === "reedit_pending" && openCase ? '<button class="cancel-smartphone-reedit secondary">再編集申請を取り消す</button>' : ""}${work.workflow_state === "reedit_editing" && openCase ? '<button class="restore-smartphone secondary">変更を取りやめる</button>' : ""}<button class="withdraw-smartphone danger">取り下げる</button></div></article>`);
   }
   await Promise.all(
     [...root.querySelectorAll(".smartphone-work-preview[data-storage-path]")]
@@ -1363,8 +1571,8 @@ async function renderExhibitionSmartphoneWorksV1(event, context, entry) {
   root.querySelectorAll(".smartphone-work-card").forEach((card) => {
     const work = activeWorks.find((item) => item.id === card.dataset.id),
       openCase = (cases || []).find((item) => item.smartphone_work_id === work.id && ["pending","open","permitted"].includes(item.state));
-    card.querySelector(".save-smartphone")?.addEventListener("click", async () => { try { await saveCard(card,work); await renderExhibitionApplicationV2(event,context); sectionMessage("#smartphoneWorkManager","スマホ枠Draftを保存しました。"); } catch (saveError) { cardMessage(card,saveError,true); } });
-    card.querySelector(".submit-smartphone")?.addEventListener("click", async () => { try { await saveCard(card,work); if (!card.querySelector('[name="smartphone_terms_confirmed"]').checked) throw new Error("スマホ枠追加同意を確認してください。"); if (!confirm("この内容を正式提出しますか？提出内容は変更不能なSnapshotとして保存されます。")) return; const submitted=await supabase.rpc("submit_exhibition_smartphone_work_v1",{p_smartphone_work_id:work.id,p_expected_agreement_id:terms.id,p_expected_agreement_hash:terms.contentHash}); if(submitted.error) throw submitted.error; await renderExhibitionApplicationV2(event,context); sectionMessage("#smartphoneWorkManager","スマホ枠作品を正式提出しました。"); } catch (submitError) { cardMessage(card,submitError,true); } });
+    card.querySelector(".save-smartphone")?.addEventListener("click", async () => { try { await saveCard(card,work); await renderExhibitionApplicationV2(event,context); sectionMessage("#smartphoneWorkManager","一時保存しました。まだ正式登録は完了していません。"); } catch (saveError) { cardMessage(card,saveError,true); } });
+    card.querySelector(".submit-smartphone")?.addEventListener("click", async () => { try { await saveCard(card,work); if (!card.querySelector('[name="smartphone_terms_confirmed"]').checked) throw new Error("スマホ枠追加同意を確認してください。"); if (!confirm("この作品を正式登録します。登録後は確認待ちとなり、通常の下書き編集はできません。よろしいですか？")) return; const submitted=await supabase.rpc("submit_exhibition_smartphone_work_v1",{p_smartphone_work_id:work.id,p_expected_agreement_id:terms.id,p_expected_agreement_hash:terms.contentHash}); if(submitted.error) throw submitted.error; const verified=await supabase.from("exhibition_smartphone_works").select("workflow_state").eq("id",work.id).single(); if(verified.error||verified.data?.workflow_state!=="submitted") throw verified.error||new Error("正式登録状態を確認できませんでした。画面を再読み込みしてください。"); await renderExhibitionApplicationV2(event,context); sectionMessage("#smartphoneWorkManager","登録完了：スマホ枠作品を正式登録しました。"); } catch (submitError) { cardMessage(card,submitError,true); } });
     card.querySelector(".request-smartphone-reedit")?.addEventListener("click",async()=>{const reason=prompt("再編集理由（必須）");if(!reason)return;const result=await supabase.rpc("request_exhibition_smartphone_reedit_v1",{p_smartphone_work_id:work.id,p_reason:reason});if(result.error)return cardMessage(card,result.error,true);await renderExhibitionApplicationV2(event,context);sectionMessage("#smartphoneWorkManager","再編集を申請しました。");});
     card.querySelector(".cancel-smartphone-reedit")?.addEventListener("click",async()=>{const result=await supabase.rpc("cancel_exhibition_smartphone_reedit_request_v1",{p_case_id:openCase.id});if(result.error)return cardMessage(card,result.error,true);await renderExhibitionApplicationV2(event,context);sectionMessage("#smartphoneWorkManager","再編集申請を取り消しました。");});
     card.querySelector(".restore-smartphone")?.addEventListener("click",async()=>{if(!confirm("変更を破棄し、最後の審査完了Snapshotへ戻しますか？"))return;const result=await supabase.rpc("cancel_permitted_exhibition_smartphone_reedit_v1",{p_case_id:openCase.id,p_reason:""});if(result.error)return cardMessage(card,result.error,true);await renderExhibitionApplicationV2(event,context);sectionMessage("#smartphoneWorkManager","最後の審査完了内容へ戻しました。");});
@@ -1392,7 +1600,7 @@ async function renderExhibitionCaptionsV2(event, context, entry, works, memberWo
   if (caseError) throw caseError;
   if (!view.isConnected || view.dataset.captionRenderToken !== renderToken) return;
   view.querySelectorAll("#v2CaptionManager").forEach((node) => node.remove());
-  view.insertAdjacentHTML("beforeend", '<section id="v2CaptionManager" class="panel exhibition-scroll-target"><div class="entry-heading"><div><span class="tag">CAPTION INFORMATION</span><h2>キャプション情報</h2></div></div><div class="section-message notice hidden" role="status" aria-live="polite"></div><p class="muted">作品確認とは別の工程です。正式提出後の変更は再提出・再確認になります。</p><div id="v2CaptionList" class="stack"></div></section>');
+  view.insertAdjacentHTML("beforeend", '<section id="v2CaptionManager" class="panel exhibition-scroll-target"><div class="entry-heading"><div><span class="tag">CAPTION INFORMATION</span><h2>キャプション情報</h2></div></div><div class="section-message notice hidden" role="status" aria-live="polite"></div><p class="muted">一時保存しただけでは登録されません。「キャプションを登録する」を押し、確認後にDB上で提出済みとなった場合だけ正式登録です。登録後の変更は再提出・再確認になります。</p><div id="v2CaptionList" class="stack"></div></section>');
   const list = view.querySelector("#v2CaptionManager #v2CaptionList");
   eligible.forEach((work) => {
     const caption = (captions || []).find((item) => item.work_id === work.id) || {},
@@ -1401,7 +1609,7 @@ async function renderExhibitionCaptionsV2(event, context, entry, works, memberWo
       editable = !caption.state || ["draft", "rejected", "reedit_editing"].includes(caption.state),
       stale = Boolean(caption.current_accepted_snapshot_id) && caption.accepted_snapshot?.work_submission_snapshot_id !== work.current_accepted_snapshot_id,
       state = caption.state || "draft";
-    list.insertAdjacentHTML("beforeend", `<article class="work-editor v2-caption-card" data-work-id="${work.id}" data-case-id="${openCase?.id || ""}"><div class="work-editor-head"><div><span class="tag">${esc(work.title || `WORK ${work.sort_order}`)}</span><h3>${esc(stale ? "現在の作品内容に対する再確認が必要" : {draft:"下書き",submitted:"確認待ち",accepted:"確認済み",rejected:"要修正",reedit_pending:"再編集申請中",reedit_editing:"再編集中"}[state] || state)}</h3></div></div>${stale ? '<div class="notice error">以前のCaptionは履歴として保持されていますが、現在確認済みのWork Snapshotには対応していません。内容を確認して再提出してください。</div>' : ""}${latestReview?.result === "rejected" ? `<div class="notice error"><strong>要修正：</strong>${esc((latestReview.problem_fields || []).join("・"))}<br>${esc(latestReview.reason)}</div>` : ""}${openCase?.individual_deadline ? `<p class="notice">個別期限：${fmt(openCase.individual_deadline)}</p>` : ""}<div class="form-grid"><label>表示名<input name="display_name" maxlength="100" value="${esc(caption.display_name || entry.display_name_value || context.member.name || "")}" ${editable ? "" : "disabled"}></label><label>英語作品名の作成<select name="english_title_mode" ${editable ? "" : "disabled"}><option value="self" ${caption.english_title_mode === "self" ? "selected" : ""}>自分で入力する</option><option value="organizer" ${caption.english_title_mode !== "self" ? "selected" : ""}>主催者へ任せる</option></select></label><label class="full">英語作品名<input name="member_english_title" maxlength="500" value="${esc(caption.member_english_title || "")}" ${editable ? "" : "disabled"}></label><label>媒体<select name="medium" ${editable ? "" : "disabled"}>${[["","選択"],["digital","デジタル"],["film","フィルム"],["instant","インスタント"],["non_photographic","写真以外"],["other","その他"]].map(([v,l]) => `<option value="${v}" ${caption.medium === v ? "selected" : ""}>${l}</option>`).join("")}</select></label><label>媒体・機材補足<input name="medium_details" maxlength="500" value="${esc(caption.medium_details || "")}" ${editable ? "" : "disabled"}></label><label>Camera<input name="camera" maxlength="200" value="${esc(caption.camera || "")}" ${editable ? "" : "disabled"}></label><label>Lens<input name="lens" maxlength="500" value="${esc(caption.lens || "")}" ${editable ? "" : "disabled"}></label><label>Film<input name="film" maxlength="500" value="${esc(caption.film || "")}" ${editable ? "" : "disabled"}></label><label>Descriptionの扱い<select name="description_choice" ${editable ? "" : "disabled"}><option value="undecided" ${!caption.description_choice || caption.description_choice === "undecided" ? "selected" : ""}>未決定</option><option value="provided" ${caption.description_choice === "provided" ? "selected" : ""}>掲載する</option><option value="unnecessary" ${caption.description_choice === "unnecessary" ? "selected" : ""}>不要</option></select></label><label class="full">Description（日本語）<textarea name="description_ja" maxlength="3000" ${editable ? "" : "disabled"}>${esc(caption.description_ja || "")}</textarea></label><label class="full">Description（英語・任意）<textarea name="description_en" maxlength="3000" ${editable ? "" : "disabled"}>${esc(caption.description_en || "")}</textarea></label><fieldset class="full"><legend>AI生成・大幅加工等</legend><p class="muted">生成AIによる生成・追加・削除、合成、写真内容へ大きく影響する加工を申告してください。通常の現像・一般的な補正を過剰に申告する必要はありません。申告内容は会場Captionおよび一般向け写真展Webサイトに表示されます。</p><label><input type="radio" name="ai_processing_declaration_${work.id}" value="none" ${caption.ai_processing_declaration === "none" ? "checked" : ""} ${editable ? "" : "disabled"}>なし</label><label><input type="radio" name="ai_processing_declaration_${work.id}" value="declared" ${caption.ai_processing_declaration === "declared" ? "checked" : ""} ${editable ? "" : "disabled"}>あり</label><label>内容<textarea name="ai_processing_details" maxlength="3000" ${editable ? "" : "disabled"}>${esc(caption.ai_processing_details || "")}</textarea></label></fieldset><label>Instagram QR<select name="instagram_qr_choice" ${editable ? "" : "disabled"}><option value="none" ${!caption.instagram_qr_choice || caption.instagram_qr_choice === "none" ? "selected" : ""}>不要</option><option value="request" ${caption.instagram_qr_choice === "request" ? "selected" : ""}>作成を希望</option><option value="provided" ${caption.instagram_qr_choice === "provided" ? "selected" : ""}>画像・情報を提供</option></select></label><label>Instagram情報<input name="instagram_qr_info" maxlength="1000" value="${esc(caption.instagram_qr_info || "")}" ${editable ? "" : "disabled"}><small>ユーザー名またはInstagramのHTTPSプロフィールURLを入力してください。提出した情報は会場用QRコードと一般向けWebリンクに使用されます。</small></label></div><div class="actions">${stale ? '<button class="start-stale-caption">現在の作品向けに確認・再提出する</button>' : ""}${editable ? '<button class="save-caption secondary">下書き保存</button><button class="submit-caption">キャプションを正式提出</button>' : ""}${state === "accepted" && !stale ? '<button class="request-caption-reedit secondary">再編集を申請</button>' : ""}${["reedit_pending","reedit_editing"].includes(state) ? '<button class="cancel-caption-reedit secondary">再編集を取り消す</button>' : ""}</div></article>`);
+    list.insertAdjacentHTML("beforeend", `<article class="work-editor v2-caption-card" data-work-id="${work.id}" data-case-id="${openCase?.id || ""}"><div class="work-editor-head"><div><span class="tag">${esc(work.title || `WORK ${work.sort_order}`)}</span><h3>${esc(stale ? "修正・再登録が必要" : {draft:"下書き・未登録",submitted:"登録済み・確認待ち",accepted:"登録済み・確認済み",rejected:"修正・再登録が必要",reedit_pending:"再編集申請中",reedit_editing:"再編集中・未登録"}[state] || state)}</h3></div></div>${stale ? '<div class="notice error">以前のCaptionは履歴として保持されていますが、現在確認済みのWork Snapshotには対応していません。内容を確認して再登録してください。</div>' : ""}${latestReview?.result === "rejected" ? `<div class="notice error"><strong>要修正：</strong>${esc((latestReview.problem_fields || []).join("・"))}<br>${esc(latestReview.reason)}</div>` : ""}${openCase?.individual_deadline ? `<p class="notice">個別期限：${fmt(openCase.individual_deadline)}</p>` : ""}<div class="form-grid"><label>表示名<input name="display_name" maxlength="100" value="${esc(caption.display_name || entry.display_name_value || context.member.name || "")}" ${editable ? "" : "disabled"}></label><label>英語作品名の作成<select name="english_title_mode" ${editable ? "" : "disabled"}><option value="self" ${caption.english_title_mode === "self" ? "selected" : ""}>自分で入力する</option><option value="organizer" ${caption.english_title_mode !== "self" ? "selected" : ""}>主催者へ任せる</option></select></label><label class="full">英語作品名<input name="member_english_title" maxlength="500" value="${esc(caption.member_english_title || "")}" ${editable ? "" : "disabled"}></label><label>媒体<select name="medium" ${editable ? "" : "disabled"}>${[["","選択"],["digital","デジタル"],["film","フィルム"],["instant","インスタント"],["non_photographic","写真以外"],["other","その他"]].map(([v,l]) => `<option value="${v}" ${caption.medium === v ? "selected" : ""}>${l}</option>`).join("")}</select></label><label>媒体・機材補足<input name="medium_details" maxlength="500" value="${esc(caption.medium_details || "")}" ${editable ? "" : "disabled"}></label><label>Camera<input name="camera" maxlength="200" value="${esc(caption.camera || "")}" ${editable ? "" : "disabled"}></label><label>Lens<input name="lens" maxlength="500" value="${esc(caption.lens || "")}" ${editable ? "" : "disabled"}></label><label>Film<input name="film" maxlength="500" value="${esc(caption.film || "")}" ${editable ? "" : "disabled"}></label><label>Descriptionの扱い<select name="description_choice" ${editable ? "" : "disabled"}><option value="undecided" ${!caption.description_choice || caption.description_choice === "undecided" ? "selected" : ""}>未決定</option><option value="provided" ${caption.description_choice === "provided" ? "selected" : ""}>掲載する</option><option value="unnecessary" ${caption.description_choice === "unnecessary" ? "selected" : ""}>不要</option></select></label><label class="full">Description（日本語）<textarea name="description_ja" maxlength="3000" ${editable ? "" : "disabled"}>${esc(caption.description_ja || "")}</textarea></label><label class="full">Description（英語・任意）<textarea name="description_en" maxlength="3000" ${editable ? "" : "disabled"}>${esc(caption.description_en || "")}</textarea></label><fieldset class="full"><legend>AI生成・大幅加工等</legend><p class="muted">生成AIによる生成・追加・削除、合成、写真内容へ大きく影響する加工を申告してください。通常の現像・一般的な補正を過剰に申告する必要はありません。申告内容は会場Captionおよび一般向け写真展Webサイトに表示されます。</p><label><input type="radio" name="ai_processing_declaration_${work.id}" value="none" ${caption.ai_processing_declaration === "none" ? "checked" : ""} ${editable ? "" : "disabled"}>なし</label><label><input type="radio" name="ai_processing_declaration_${work.id}" value="declared" ${caption.ai_processing_declaration === "declared" ? "checked" : ""} ${editable ? "" : "disabled"}>あり</label><label>内容<textarea name="ai_processing_details" maxlength="3000" ${editable ? "" : "disabled"}>${esc(caption.ai_processing_details || "")}</textarea></label></fieldset><label>Instagram QR<select name="instagram_qr_choice" ${editable ? "" : "disabled"}><option value="none" ${!caption.instagram_qr_choice || caption.instagram_qr_choice === "none" ? "selected" : ""}>不要</option><option value="request" ${caption.instagram_qr_choice === "request" ? "selected" : ""}>作成を希望</option><option value="provided" ${caption.instagram_qr_choice === "provided" ? "selected" : ""}>画像・情報を提供</option></select></label><label>Instagram情報<input name="instagram_qr_info" maxlength="1000" value="${esc(caption.instagram_qr_info || "")}" ${editable ? "" : "disabled"}><small>ユーザー名またはInstagramのHTTPSプロフィールURLを入力してください。提出した情報は会場用QRコードと一般向けWebリンクに使用されます。</small></label></div><div class="actions">${stale ? '<button class="start-stale-caption">現在の作品向けに確認・再登録する</button>' : ""}${editable ? '<button class="save-caption secondary">一時保存</button><button class="submit-caption">キャプションを登録する</button>' : ""}${state === "accepted" && !stale ? '<button class="request-caption-reedit secondary">再編集を申請</button>' : ""}${["reedit_pending","reedit_editing"].includes(state) ? '<button class="cancel-caption-reedit secondary">再編集を取り消す</button>' : ""}</div></article>`);
   });
   list.querySelectorAll(".v2-caption-card").forEach((card) => {
     const work = eligible.find((item) => item.id === card.dataset.workId),
@@ -1432,8 +1640,8 @@ async function renderExhibitionCaptionsV2(event, context, entry, works, memberWo
   const payload = (card, work) => ({ p_work_id: work.id, p_title: card.querySelector('[name="title"]').value, p_display_name: card.querySelector('[name="display_name"]').value, p_english_title_mode: card.querySelector('[name="english_title_mode"]').value, p_member_english_title: card.querySelector('[name="member_english_title"]').value, p_medium: card.querySelector('[name="medium"]').value, p_medium_details: card.querySelector('[name="medium_details"]').value, p_camera: card.querySelector('[name="camera"]').value, p_lens: card.querySelector('[name="lens"]').value, p_film: card.querySelector('[name="film"]').value, p_description_choice: card.querySelector('[name="description_choice"]').value, p_description_ja: card.querySelector('[name="description_ja"]').value, p_description_en: card.querySelector('[name="description_en"]').value, p_instagram_qr_choice: card.querySelector('[name="instagram_qr_choice"]').value, p_instagram_qr_info: card.querySelector('[name="instagram_qr_info"]').value, p_instagram_qr_path: work.instagram_qr_path || null, p_ai_processing_declaration: card.querySelector(`[name="ai_processing_declaration_${work.id}"]:checked`)?.value || null, p_ai_processing_details: card.querySelector('[name="ai_processing_details"]').value });
   list.querySelectorAll(".v2-caption-card").forEach((card) => {
     const work = eligible.find((item) => item.id === card.dataset.workId);
-    card.querySelector(".save-caption")?.addEventListener("click", async () => { const { error } = await supabase.rpc("save_exhibition_caption_draft_v2", payload(card, work)); if (error) return sectionFailure("#v2CaptionManager", error); await renderExhibitionApplicationV2(event, context); sectionMessage("#v2CaptionManager", "キャプション下書きを保存しました。"); });
-    card.querySelector(".submit-caption")?.addEventListener("click", async () => { const saved = await supabase.rpc("save_exhibition_caption_draft_v2", payload(card, work)); if (saved.error) return sectionFailure("#v2CaptionManager", saved.error); if (!confirm("この内容を正式提出しますか？提出内容はSnapshotとして保存されます。")) return; const { error } = await supabase.rpc("submit_exhibition_caption_v2", { p_work_id: work.id }); if (error) return sectionFailure("#v2CaptionManager", error); await renderExhibitionApplicationV2(event, context); sectionMessage("#v2CaptionManager", "キャプションを正式提出しました。"); });
+    card.querySelector(".save-caption")?.addEventListener("click", async () => { const { error } = await supabase.rpc("save_exhibition_caption_draft_v2", payload(card, work)); if (error) return sectionFailure("#v2CaptionManager", error); await renderExhibitionApplicationV2(event, context); sectionMessage("#v2CaptionManager", "一時保存しました。キャプションはまだ正式登録されていません。"); });
+    card.querySelector(".submit-caption")?.addEventListener("click", async () => { const saved = await supabase.rpc("save_exhibition_caption_draft_v2", payload(card, work)); if (saved.error) return sectionFailure("#v2CaptionManager", saved.error); if (!confirm("このキャプションを正式登録します。内容は変更不能なSnapshotとして保存されます。よろしいですか？")) return; const { error } = await supabase.rpc("submit_exhibition_caption_v2", { p_work_id: work.id }); if (error) return sectionFailure("#v2CaptionManager", error); const verified=await supabase.from("exhibition_caption_working_data").select("state").eq("work_id",work.id).single(); if(verified.error||verified.data?.state!=="submitted") return sectionFailure("#v2CaptionManager",verified.error||new Error("正式登録状態を確認できませんでした。画面を再読み込みしてください。")); await renderExhibitionApplicationV2(event, context); sectionMessage("#v2CaptionManager", "登録完了：キャプションを正式登録しました。"); });
     card.querySelector(".request-caption-reedit")?.addEventListener("click", async () => { const reason = prompt("再編集理由（必須）"); if (!reason) return; const { error } = await supabase.rpc("request_exhibition_caption_reedit_v2", { p_work_id: work.id, p_reason: reason }); if (error) return sectionFailure("#v2CaptionManager", error); await renderExhibitionApplicationV2(event, context); sectionMessage("#v2CaptionManager", "キャプションの再編集を申請しました。"); });
     card.querySelector(".start-stale-caption")?.addEventListener("click", async () => { if (!confirm("以前のCaption履歴を残したまま、現在の作品内容向けの再提出を開始しますか？")) return; const { error } = await supabase.rpc("start_stale_exhibition_caption_resubmission_v2", { p_work_id: work.id }); if (error) return sectionFailure("#v2CaptionManager", error); await renderExhibitionApplicationV2(event, context); sectionMessage("#v2CaptionManager", "現在の作品向けのCaption再提出を開始しました。"); });
     card.querySelector(".cancel-caption-reedit")?.addEventListener("click", async () => { const { error } = await supabase.rpc("cancel_exhibition_caption_reedit_v2", { p_case_id: card.dataset.caseId, p_reason: "" }); if (error) return sectionFailure("#v2CaptionManager", error); await renderExhibitionApplicationV2(event, context); sectionMessage("#v2CaptionManager", "キャプションの再編集を取り消しました。"); });
@@ -3637,6 +3845,100 @@ async function renderAdminSmartphoneWorksV1(event, entries, root) {
   });
 }
 
+async function renderAdminDraftRescueV1(event, root) {
+  root.innerHTML = '<p>Draft救済情報を読み込んでいます…</p>';
+  const [statusResult, entriesResult, smartphoneResult, termsResult] = await Promise.all([
+    supabase.rpc("admin_get_exhibition_draft_rescue_status_v1", { p_event_id: event.id }),
+    supabase.from("exhibition_entries").select("id,member_id,members(id,name,email),exhibition_works(id,title,sort_order,workflow_state,original_image_path)").eq("event_id", event.id),
+    supabase.from("exhibition_smartphone_works").select("id,entry_id,member_id,sort_order,workflow_state,original_image_path").eq("event_id", event.id).order("sort_order"),
+    supabase.rpc("get_exhibition_smartphone_terms_v1"),
+  ]);
+  const firstError = [statusResult, entriesResult, smartphoneResult, termsResult].find((result) => result.error)?.error;
+  if (firstError) return failure(firstError);
+  const status = statusResult.data || {}, campaigns = status.campaigns || [], windows = status.memberWindows || [], targets = status.targets || [], attempts = status.attempts || [],
+    entries = entriesResult.data || [], smartphoneWorks = smartphoneResult.data || [], terms = termsResult.data || {},
+    campaign = campaigns.find((item) => item.state === "enabled") || campaigns[0] || null,
+    activeCampaign = campaign?.state === "enabled" && Date.now() < new Date(campaign.ends_at).getTime() ? campaign : null,
+    memberById = new Map(entries.map((entry) => [entry.member_id, entry.members || {}])),
+    entryById = new Map(entries.map((entry) => [entry.id, entry])),
+    workRows = [
+      ...entries.flatMap((entry) => (entry.exhibition_works || []).filter((work) => work.workflow_state === "draft").map((work) => ({ ...work, targetType: "regular_work", memberId: entry.member_id, label: work.title || `通常作品 #${work.sort_order}` }))),
+      ...smartphoneWorks.filter((work) => work.workflow_state === "draft").map((work) => ({ ...work, targetType: "smartphone_work", memberId: work.member_id, label: `スマホ作品 #${work.sort_order}`, entry: entryById.get(work.entry_id) })),
+    ],
+    activeTargetFor = (work) => targets.find((target) => target.state === "authorized" && target.target_type === work.targetType && (target.regular_work_id === work.id || target.smartphone_work_id === work.id)),
+    activeWindowFor = (memberId) => windows.find((item) => item.campaign_id === activeCampaign?.id && item.member_id === memberId && item.state === "active"),
+    localInput = (value) => value ? new Date(new Date(value).getTime() - new Date(value).getTimezoneOffset() * 60000).toISOString().slice(0, 16) : "",
+    campaignSummary = campaign ? `<dl><dt>直近の状態</dt><dd>${esc(campaign.state)}</dd><dt>管理者代理登録の期限</dt><dd>${fmt(campaign.ends_at)}</dd><dt>理由</dt><dd>${esc(campaign.reason)}</dd></dl><div class="actions">${campaign.state === "enabled" ? '<button id="disableDraftRescue" class="danger">キャンペーンを無効化</button>' : campaign.state !== "completed" && Date.now() < new Date(campaign.ends_at).getTime() ? '<button id="enableDraftRescue">キャンペーンを有効化</button>' : ""}</div>` : "",
+    campaignCreation = activeCampaign ? "" : `<div class="form-grid"><label>新しいキャンペーン終了日時<input id="draftRescueCampaignEnd" type="datetime-local"></label><label>開始理由<input id="draftRescueCampaignReason" maxlength="2000"></label></div><button id="createDraftRescueCampaign">救済キャンペーンを作成</button>`;
+  root.innerHTML = `<div class="entry-heading"><div><span class="tag">DRAFT RESCUE</span><h2>${esc(event.exhibition_title || event.title)}｜Draft救済管理</h2></div><button id="backFromDraftRescue" class="secondary">出展者・作品管理へ戻る</button></div>
+    <div class="section-message notice hidden" role="status"></div>
+    <section class="panel nested-fields"><h3>救済キャンペーン</h3>${campaignSummary}${campaignCreation}<p class="muted">本人再登録は部員ごとの個別期限、管理者代理登録はキャンペーン終了日時で判定します。</p></section>
+    <section class="panel"><h3>Draft作品と救済許可</h3>${activeCampaign ? "" : '<div class="notice error">有効な救済キャンペーンがありません。新しい許可は設定できません。</div>'}<div class="stack draft-rescue-work-list">${workRows.length ? workRows.map((work) => { const member = memberById.get(work.memberId) || {}, target = activeTargetFor(work), memberWindow = activeWindowFor(work.memberId), proxyAgreementOk = work.targetType !== "smartphone_work" || Boolean(target?.smartphone_agreement_definition_id && target?.smartphone_agreement_content_hash && target?.smartphone_agreed_at); return `<article class="admin-work-card draft-rescue-card" data-work-id="${work.id}" data-target-type="${work.targetType}"><div class="admin-work-copy"><div class="work-meta"><span class="tag">${work.targetType === "regular_work" ? "通常作品" : "スマホ作品"}</span><strong>${esc(work.label)}</strong><span class="status">下書き・未登録</span></div><p>${esc(member.name || work.memberId)}${member.email ? `（${esc(member.email)}）` : ""}</p>${target ? `<div class="notice"><strong>${target.rescue_mode === "member_resubmit" ? "本人再登録" : "管理者代理登録"}</strong><p>${target.rescue_mode === "member_resubmit" ? `本人個別期限：${fmt(memberWindow?.deadline)}` : `代理登録期限：${fmt(activeCampaign?.ends_at)}`}</p><p>状態：${esc(target.state)}／理由：${esc(target.reason)}</p></div><div class="actions">${target.rescue_mode === "member_resubmit" ? '<button class="update-member-deadline secondary">本人期限を変更</button>' : ""}${target.rescue_mode === "admin_proxy_submit" ? `<button class="proxy-submit" ${proxyAgreementOk ? "" : "disabled"}>管理者として代理登録</button>${!proxyAgreementOk ? '<small>スマホ追加規約の有効な本人同意記録がないため代理登録できません。</small>' : ""}` : ""}<button class="revoke-rescue danger">救済許可を取り消す</button></div>` : `<div class="form-grid"><label>救済方式<select name="rescue_mode"><option value="member_resubmit">本人再登録</option><option value="admin_proxy_submit">管理者代理登録</option></select></label><label class="member-deadline-field">本人再登録期限<input name="member_deadline" type="datetime-local" value="${localInput(memberWindow?.deadline)}"></label><label>許可理由<input name="reason" maxlength="2000"></label><label class="proxy-field hidden"><input name="intent_confirmed" type="checkbox">本人の正式提出意思を確認済み</label><label class="proxy-field hidden">確認方法<input name="confirmation_method" maxlength="100" placeholder="対面・LINE等"></label><label class="proxy-field hidden">本人確認日時<input name="confirmed_at" type="datetime-local"></label>${work.targetType === "smartphone_work" ? '<label class="proxy-field hidden"><input name="smartphone_agreed" type="checkbox">本人による現在のスマホ枠追加規約同意を確認済み</label><label class="proxy-field hidden">本人同意日時<input name="smartphone_agreed_at" type="datetime-local"></label>' : ""}</div><button class="authorize-rescue" ${activeCampaign ? "" : "disabled"}>この作品を救済対象にする</button>`}</div></article>`; }).join("") : '<p class="muted">救済対象にできるDraft作品はありません。</p>'}</div></section>
+    <section class="panel"><h3>操作履歴</h3>${attempts.length ? `<div class="table-wrap"><table><thead><tr><th>日時</th><th>操作</th><th>結果</th><th>操作者</th></tr></thead><tbody>${attempts.map((item) => `<tr><td>${fmt(item.attempted_at)}</td><td>${esc(item.operation_type)}</td><td>${item.succeeded ? "成功" : `失敗：${esc(item.safe_error_summary)}`}</td><td>${esc(item.operator_identifier)}</td></tr>`).join("")}</tbody></table></div>` : '<p class="muted">操作履歴はまだありません。</p>'}</section>`;
+  const showMessage = (value, isError = false) => { const box = root.querySelector(".section-message"); box.textContent = value?.message || value; box.classList.remove("hidden"); box.classList.toggle("error", isError); };
+  const refresh = async (value) => { await renderAdminDraftRescueV1(event, root); if (value) { const box = root.querySelector(".section-message"); box.textContent = value; box.classList.remove("hidden"); } };
+  root.querySelector("#backFromDraftRescue").onclick = () => renderExhibitionParticipants(event);
+  root.querySelector("#createDraftRescueCampaign")?.addEventListener("click", async () => { const end = root.querySelector("#draftRescueCampaignEnd").value, reason = root.querySelector("#draftRescueCampaignReason").value.trim(); if (!end || !reason) return showMessage("終了日時と開始理由を入力してください。", true); const result = await supabase.rpc("admin_create_exhibition_draft_rescue_campaign_v1", { p_event_id: event.id, p_ends_at: new Date(end).toISOString(), p_reason: reason }); if (result.error) return showMessage(result.error, true); await refresh("救済キャンペーンを作成しました。"); });
+  const setCampaignState = async (state) => { const reason = prompt(state === "enabled" ? "再開理由（必須）" : "無効化理由（必須）"); if (!reason) return; const result = await supabase.rpc("admin_set_exhibition_draft_rescue_campaign_state_v1", { p_campaign_id: campaign.id, p_state: state, p_reason: reason }); if (result.error) return showMessage(result.error, true); await refresh(state === "enabled" ? "キャンペーンを有効化しました。" : "キャンペーンを無効化しました。"); };
+  root.querySelector("#disableDraftRescue")?.addEventListener("click", () => setCampaignState("disabled"));
+  root.querySelector("#enableDraftRescue")?.addEventListener("click", () => setCampaignState("enabled"));
+  root.querySelectorAll(".draft-rescue-card").forEach((card) => {
+    const work = workRows.find((item) => item.id === card.dataset.workId), target = activeTargetFor(work), memberWindow = activeWindowFor(work.memberId), mode = card.querySelector('[name="rescue_mode"]');
+    const syncMode = () => { const proxy = mode?.value === "admin_proxy_submit"; card.querySelector(".member-deadline-field")?.classList.toggle("hidden", proxy); card.querySelectorAll(".proxy-field").forEach((field) => field.classList.toggle("hidden", !proxy)); };
+    mode?.addEventListener("change", syncMode); syncMode();
+    card.querySelector(".authorize-rescue")?.addEventListener("click", async () => { const rescueMode = mode.value, reason = card.querySelector('[name="reason"]').value.trim(); if (!reason) return showMessage("救済許可の理由を入力してください。", true); if (rescueMode === "member_resubmit") { const deadline = card.querySelector('[name="member_deadline"]').value; if (!deadline) return showMessage("本人再登録期限を入力してください。", true); const windowResult = await supabase.rpc("admin_set_exhibition_draft_rescue_member_window_v1", { p_campaign_id: activeCampaign.id, p_member_id: work.memberId, p_deadline: new Date(deadline).toISOString(), p_reason: reason }); if (windowResult.error) return showMessage(windowResult.error, true); }
+      const proxy = rescueMode === "admin_proxy_submit", smartphoneAgreed = card.querySelector('[name="smartphone_agreed"]')?.checked || false, confirmedAt = card.querySelector('[name="confirmed_at"]')?.value, agreedAt = card.querySelector('[name="smartphone_agreed_at"]')?.value;
+      const result = await supabase.rpc("admin_authorize_exhibition_draft_rescue_target_v1", { p_campaign_id: activeCampaign.id, p_target_type: work.targetType, p_work_id: work.id, p_rescue_mode: rescueMode, p_reason: reason, p_member_intent_confirmed: proxy && card.querySelector('[name="intent_confirmed"]').checked, p_member_confirmation_method: proxy ? card.querySelector('[name="confirmation_method"]').value.trim() || null : null, p_member_confirmed_at: proxy && confirmedAt ? new Date(confirmedAt).toISOString() : null, p_smartphone_agreement_definition_id: proxy && work.targetType === "smartphone_work" && smartphoneAgreed ? terms.id : null, p_smartphone_agreement_content_hash: proxy && work.targetType === "smartphone_work" && smartphoneAgreed ? terms.contentHash : null, p_smartphone_agreed_at: proxy && work.targetType === "smartphone_work" && smartphoneAgreed && agreedAt ? new Date(agreedAt).toISOString() : null });
+      if (result.error) return showMessage(result.error, true); await refresh("救済対象を設定しました。");
+    });
+    card.querySelector(".revoke-rescue")?.addEventListener("click", async () => { const reason = prompt("救済許可の取消理由（必須）"); if (!reason) return; const result = await supabase.rpc("admin_revoke_exhibition_draft_rescue_target_v1", { p_target_id: target.id, p_reason: reason }); if (result.error) return showMessage(result.error, true); await refresh("救済許可を取り消しました。"); });
+    card.querySelector(".update-member-deadline")?.addEventListener("click", async () => { const value = prompt("新しい本人再登録期限（ISO形式または日時）", memberWindow?.deadline || ""); if (!value) return; const reason = prompt("期限変更理由（必須）"); if (!reason) return; const deadline = new Date(value); if (Number.isNaN(deadline.getTime())) return showMessage("期限の形式が正しくありません。", true); const result = await supabase.rpc("admin_set_exhibition_draft_rescue_member_window_v1", { p_campaign_id: activeCampaign.id, p_member_id: work.memberId, p_deadline: deadline.toISOString(), p_reason: reason }); if (result.error) return showMessage(result.error, true); await refresh("本人再登録期限を変更しました。"); });
+    card.querySelector(".proxy-submit")?.addEventListener("click", async () => { if (!confirm("本人の正式提出意思を確認済みです。このDraftを管理者として正式登録しますか？")) return; const rpc = work.targetType === "regular_work" ? "admin_proxy_submit_regular_draft_rescue_v1" : "admin_proxy_submit_smartphone_draft_rescue_v1", result = await supabase.rpc(rpc, { p_target_id: target.id }); if (result.error) return showMessage(result.error, true); await refresh("管理者代理登録が完了しました。"); });
+  });
+}
+
+const adminSubmissionState = (state, replacement = false) => {
+  if (replacement) return "Replacement";
+  return ({
+    draft: "Draft",
+    submitted: "Submitted",
+    accepted: "Accepted",
+    rejected: "Correction待ち",
+    needs_revision: "Correction待ち",
+    reedit_pending: "Re-edit待ち",
+    reedit_editing: "Re-edit待ち",
+    withdrawn: "Withdrawn",
+  })[state] || state || "未設定";
+};
+
+async function renderAdminSubmissionStatusV2(event, entries, root) {
+  const host = root.querySelector("#adminSubmissionStatus");
+  if (!host) return;
+  const regular = entries.flatMap((entry) => (entry.exhibition_works || []).map((work) => ({ entry, work }))),
+    regularIds = regular.map(({ work }) => work.id),
+    [smartphoneResult, captionResult] = await Promise.all([
+      event.smartphone_exhibition_enabled
+        ? supabase.from("exhibition_smartphone_works").select("id,entry_id,member_id,sort_order,workflow_state").eq("event_id", event.id).order("sort_order")
+        : Promise.resolve({ data: [], error: null }),
+      regularIds.length
+        ? supabase.from("exhibition_caption_working_data").select("work_id,state").in("work_id", regularIds)
+        : Promise.resolve({ data: [], error: null }),
+    ]);
+  if (smartphoneResult.error || captionResult.error) {
+    host.innerHTML = `<div class="notice error">${esc((smartphoneResult.error || captionResult.error).message)}</div>`;
+    return;
+  }
+  const smartphones = smartphoneResult.data || [], captions = new Map((captionResult.data || []).map((caption) => [caption.work_id, caption.state])),
+    activeRegular = regular.filter(({ work }) => work.workflow_state !== "withdrawn" && work.status !== "withdrawn"),
+    activeSmartphone = smartphones.filter((work) => work.workflow_state !== "withdrawn");
+  host.innerHTML = `<div class="entry-heading"><div><span class="tag">SUBMISSION STATUS</span><h3>提出・対応状況</h3></div><span class="status">読み取り専用</span></div><div class="summary-strip"><span>申込者 ${entries.length}名</span><span>個人枠 有効${activeRegular.length}点／履歴${regular.length}点</span>${event.smartphone_exhibition_enabled ? `<span>スマホ枠 有効${activeSmartphone.length}点／履歴${smartphones.length}点</span>` : ""}</div><div class="admin-submission-members">${entries.map((entry) => {
+    const member = entry.members || {}, memberRegular = regular.filter((item) => item.entry.id === entry.id), memberSmartphone = smartphones.filter((work) => work.entry_id === entry.id),
+      activeRegularCount = memberRegular.filter(({ work }) => work.workflow_state !== "withdrawn" && work.status !== "withdrawn").length,
+      activeSmartphoneCount = memberSmartphone.filter((work) => work.workflow_state !== "withdrawn").length;
+    return `<details class="admin-submission-member"><summary><strong>${esc(member.name || "部員情報なし")}</strong><span>${esc(member.member_no || "")}</span><span>個人枠 ${activeRegularCount}点</span>${event.smartphone_exhibition_enabled ? `<span>スマホ枠 ${activeSmartphoneCount}点</span>` : ""}</summary><div class="admin-submission-detail"><section><h4>個人枠</h4>${memberRegular.length ? `<ul>${memberRegular.map(({ work }) => `<li><span>作品 ${work.sort_order}${work.replacement_for_work_id ? "（Replacement）" : ""}</span><strong>${esc(adminSubmissionState(work.workflow_state || work.status, Boolean(work.replacement_for_work_id)))}</strong><small>Caption：${esc(adminSubmissionState(captions.get(work.id)))}</small></li>`).join("")}</ul>` : '<p class="muted">作品なし（最大数までの提出は必須ではありません）</p>'}</section>${event.smartphone_exhibition_enabled ? `<section><h4>スマホ枠 <small>${activeSmartphoneCount ? "対応中" : "未提出"}</small></h4>${memberSmartphone.length ? `<ul>${memberSmartphone.map((work) => `<li><span>スマホ作品 ${work.sort_order}</span><strong>${esc(adminSubmissionState(work.workflow_state))}</strong></li>`).join("")}</ul>` : '<p class="muted">作品なし</p>'}</section>` : ""}</div></details>`;
+  }).join("") || '<p class="muted">出展申込はまだありません。</p>'}</div>`;
+}
+
 async function renderExhibitionParticipants(event) {
   const root = document.querySelector("#participantAdmin");
   document.querySelector("#editor").classList.add("hidden");
@@ -3673,9 +3975,12 @@ async function renderExhibitionParticipants(event) {
     submitted = entries.filter((entry) => entry.status === "submitted").length;
   root.innerHTML = `<div class="entry-heading"><div><span class="tag">EXHIBITORS & WORKS</span><h2>${esc(event.exhibition_title || event.title)}｜出展者・作品管理</h2></div><div class="actions admin-work-actions"><button id="assignDisplayNumbers" class="secondary" ${visibleWorks.some((item) => !item.work.display_no) ? "" : "disabled"}>未採番作品へ連番を付与</button><button id="exportExhibitionManifest" class="secondary" ${visibleWorks.length ? "" : "disabled"}>連携用CSVを出力</button><button id="copyExhibitionCaptions" class="secondary" ${visibleWorks.length ? "" : "disabled"}>タイトル・キャプションを一括コピー</button></div></div><div class="summary-strip"><span>申込 ${entries.length}名</span><span>確定 ${submitted}名</span><span>作品 ${visibleWorks.length}点</span><span>未採番 ${visibleWorks.filter((item) => !item.work.display_no).length}点</span><span>確認済み ${visibleWorks.filter((item) => item.work.status === "accepted").length}点</span><span>要修正 ${visibleWorks.filter((item) => item.work.status === "rejected").length}点</span><span>QR登録 ${visibleWorks.filter((item) => item.work.instagram_qr_path).length}点</span></div><div id="exhibitorList" class="exhibitor-list"></div>`;
   if (Number(event.exhibition_workflow_version) === 2) {
+    root.querySelector(".summary-strip").insertAdjacentHTML("afterend", '<section id="adminSubmissionStatus" class="panel admin-submission-status"><p class="muted">提出状況を読み込んでいます…</p></section>');
+    await renderAdminSubmissionStatusV2(event, entries || [], root);
+    const draftRescueOperator = ["takayuki.fujiyoshi.2r@stu.hosei.ac.jp", "photo.club.at.koganei@gmail.com"].includes(String(session?.user?.email || "").toLowerCase());
     root.querySelector(".admin-work-actions").insertAdjacentHTML(
       "afterbegin",
-      '<button id="processV2Deadlines" class="secondary">期限処理を実行</button><button id="showV2Export" class="secondary">Master Export / Publication</button><button id="showV2Actual" class="secondary">Actual実展示記録</button><button id="showV2Archive" class="secondary">Archive</button>',
+      `${draftRescueOperator ? '<button id="showDraftRescue" class="secondary">Draft救済管理</button>' : ""}<button id="processV2Deadlines" class="secondary">期限処理を実行</button><button id="showV2Export" class="secondary">Master Export / Publication</button><button id="showV2Actual" class="secondary">Actual実展示記録</button><button id="showV2Archive" class="secondary">Archive</button>`,
     );
     root.querySelector(".entry-heading").insertAdjacentHTML(
       "afterend",
@@ -3716,6 +4021,9 @@ async function renderExhibitionParticipants(event) {
     );
     root.querySelector("#showV2Archive")?.addEventListener("click", () =>
       renderAdminExhibitionArchiveV2(event, root),
+    );
+    root.querySelector("#showDraftRescue")?.addEventListener("click", () =>
+      renderAdminDraftRescueV1(event, root),
     );
   }
   const list = root.querySelector("#exhibitorList");
