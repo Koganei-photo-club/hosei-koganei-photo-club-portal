@@ -1390,23 +1390,27 @@ async function renderExhibitionWorksV2(event, context, entry) {
     '<section id="v2WorkManager" class="panel exhibition-scroll-target"><div class="entry-heading"><div><span class="tag">WORK SUBMISSION</span><h2>個人枠</h2></div><button id="newV2Work" class="secondary">個人枠作品を追加</button></div><div class="section-message notice hidden" role="status" aria-live="polite"></div><p class="muted">一時保存しただけでは登録されません。「作品を登録する」を押し、確認後にDB上で提出済みとなった作品だけが正式登録です。キャプション情報は別工程で登録します。</p><div id="v2WorkSummary" class="summary-strip"></div><div id="v2WorkList" class="stack"></div><div class="actions"><button id="submitV2WorkBatch">作品を登録する</button></div></section>',
   );
   const root = document.querySelector("#v2WorkManager"),
-    [{ data: works, error }, { data: cases, error: casesError }, { data: reviews, error: reviewsError }, { data: rescueTargets, error: rescueError }] =
+    [{ data: works, error }, { data: cases, error: casesError }, { data: reviews, error: reviewsError }, { data: rescueTargets, error: rescueError }, { data: creationException, error: creationExceptionError }] =
       await Promise.all([
         supabase.from("exhibition_works").select("*").eq("entry_id", entry.id).order("sort_order"),
         supabase.from("exhibition_workflow_cases").select("*").eq("event_id", event.id).order("requested_at", { ascending: false }),
         supabase.from("exhibition_work_reviews").select("*").in("work_id", ["00000000-0000-0000-0000-000000000000"]),
         supabase.rpc("get_my_exhibition_draft_rescue_targets_v1", { p_event_id: event.id }),
+        supabase.rpc("get_my_exhibition_regular_work_creation_exception_v1", { p_event_id: event.id }),
       ]);
   if (error) throw error;
   if (casesError) throw casesError;
   if (reviewsError) throw reviewsError;
   if (rescueError) throw rescueError;
+  if (creationExceptionError) throw creationExceptionError;
   if (!host.isConnected || host.dataset.workRenderToken !== renderToken) return;
   const activeWorks = (works || []).filter((work) => work.workflow_state !== "withdrawn"),
     logicalActiveWorks = getLogicalActiveRegularWorks(works),
     memberWorkNumbers = createMemberRegularWorkNumberMap(works),
     workIds = activeWorks.map((work) => work.id),
     rescueByWork = new Map((rescueTargets || []).filter((item) => item.target_type === "regular_work").map((item) => [item.work_id,item])),
+    exceptionWorkIds = new Set(creationException?.workIds || []),
+    creationExceptionOpen = Boolean(creationException && Number(creationException.remainingCount) > 0),
     ordinaryWorkOpen = Date.now() < new Date(event.exhibition_work_submission_deadline).getTime()
       || Boolean(entry.revival_deadline && Date.now() < new Date(entry.revival_deadline).getTime());
   let reviewRows = reviews || [];
@@ -1442,12 +1446,12 @@ async function renderExhibitionWorksV2(event, context, entry) {
               : work.workflow_state === "reedit_editing"
                 ? "再編集中"
                 : "下書き・未登録";
-  root.querySelector("#v2WorkSummary").innerHTML = `<span><strong>通常作品：登録枠使用 ${logicalActiveWorks.length} / ${event.max_works}点</strong></span><span>正式登録可能 ${activeWorks.filter(ready).length}点</span><span>下書き・未完成 ${activeWorks.filter((work) => editableStates.has(work.workflow_state) && !ready(work)).length}点</span><span>登録済み・確認待ち ${activeWorks.filter((work) => work.workflow_state === "submitted").length}点</span><span>登録済み・作品確認済み ${activeWorks.filter((work) => work.workflow_state === "accepted").length}点</span>`;
+  root.querySelector("#v2WorkSummary").innerHTML = `<span><strong>通常作品：登録枠使用 ${logicalActiveWorks.length} / ${event.max_works}点</strong></span><span>正式登録可能 ${activeWorks.filter(ready).length}点</span><span>下書き・未完成 ${activeWorks.filter((work) => editableStates.has(work.workflow_state) && !ready(work)).length}点</span><span>登録済み・確認待ち ${activeWorks.filter((work) => work.workflow_state === "submitted").length}点</span><span>登録済み・作品確認済み ${activeWorks.filter((work) => work.workflow_state === "accepted").length}点</span>${creationException ? `<span><strong>追加登録特例：残り ${creationException.remainingCount} / ${creationException.maxNewWorks}点</strong>（期限 ${fmt(creationException.expiresAt)}）</span>` : ""}`;
   const list = root.querySelector("#v2WorkList");
   if (!activeWorks.length) list.innerHTML = '<p class="muted">作品Draftはまだありません。</p>';
   activeWorks.forEach((work) => {
     const rescue = rescueByWork.get(work.id),
-      editable = editableStates.has(work.workflow_state) && (work.workflow_state !== "draft" || ordinaryWorkOpen || rescue),
+      editable = editableStates.has(work.workflow_state) && (work.workflow_state !== "draft" || ordinaryWorkOpen || rescue || exceptionWorkIds.has(work.id)),
       memberNumber = memberWorkNumbers.get(work.id),
       activeReplacement = activeWorks.find((item) => item.replacement_for_work_id === work.id),
       replacementLabel = work.replacement_for_work_id
@@ -1484,7 +1488,7 @@ async function renderExhibitionWorksV2(event, context, entry) {
       ),
   );
   if (!root.isConnected || host.dataset.workRenderToken !== renderToken) return;
-  root.querySelector("#newV2Work").disabled = !ordinaryWorkOpen || logicalActiveWorks.length >= event.max_works;
+  root.querySelector("#newV2Work").disabled = (!ordinaryWorkOpen && !creationExceptionOpen) || logicalActiveWorks.length >= event.max_works;
   root.querySelector("#newV2Work").onclick = async () => {
     const { error } = await supabase.rpc("save_exhibition_work_draft_v2", {
       p_event_id: event.id, p_work_id: null, p_title: "", p_orientation: "", p_print_size: "",
