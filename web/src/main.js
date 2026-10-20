@@ -244,20 +244,32 @@ async function boot() {
   }
   const { data } = await supabase.auth.getSession();
   session = data.session;
-  supabase.auth.onAuthStateChange((_event, next) => {
+  let initialAuthRenderClaimed = false;
+  const renderForAuthState = (next) => {
+    authRenderGeneration += 1;
+    authRenderTask = null;
+    setTimeout(() => (next ? navigate() : renderAuth()), 0);
+  };
+  supabase.auth.onAuthStateChange((event, next) => {
     const hadSession = Boolean(session);
     session = next;
-    if (next) {
-      authRenderGeneration += 1;
-      authRenderTask = null;
-    } else if (hadSession) {
-      authRenderGeneration += 1;
-      authRenderTask = null;
+
+    if (event === "TOKEN_REFRESHED") return;
+    if (event === "INITIAL_SESSION") {
+      if (initialAuthRenderClaimed) return;
+      initialAuthRenderClaimed = true;
+      renderForAuthState(next);
+      return;
     }
-    setTimeout(() => (next ? navigate() : renderAuth()), 0);
+    if (!["SIGNED_IN", "SIGNED_OUT", "USER_UPDATED", "PASSWORD_RECOVERY"].includes(event)) return;
+    initialAuthRenderClaimed = true;
+    if (next || hadSession) renderForAuthState(next);
   });
-  if (session) navigate();
-  else renderAuth();
+  if (!initialAuthRenderClaimed) {
+    initialAuthRenderClaimed = true;
+    if (session) navigate();
+    else renderAuth();
+  }
 }
 
 function loadGoogleIdentity() {
@@ -4397,16 +4409,26 @@ async function renderExhibitionParticipants(event) {
     await renderExhibitionParticipants(event);
     message(`${data.assignedCount}作品へ番号を付けました。`);
   };
-  root.querySelectorAll(".storage-image").forEach((target) =>
+  root.querySelectorAll(".storage-image").forEach((target) => {
+    const bucket = target.dataset.storageBucket || "exhibition-previews";
+    if (bucket === "exhibition-originals") {
+      target.textContent = "プレビュー画像なし（原画像はダウンロードできます）";
+      target.classList.add("muted");
+      return;
+    }
     loadPrivateWorkImage(
       target,
-      target.dataset.storageBucket || "exhibition-previews",
+      bucket,
       target.dataset.storagePath,
       target.dataset.alt || "作品画像",
-      target.dataset.fallbackBucket || null,
-      target.dataset.fallbackPath || null,
-    ),
-  );
+      target.dataset.fallbackBucket === "exhibition-originals"
+        ? null
+        : target.dataset.fallbackBucket || null,
+      target.dataset.fallbackBucket === "exhibition-originals"
+        ? null
+        : target.dataset.fallbackPath || null,
+    );
+  });
   root.querySelectorAll(".generate-public-image").forEach((button) => {
     button.onclick = async () => {
       const card = button.closest(".admin-work-card"),
